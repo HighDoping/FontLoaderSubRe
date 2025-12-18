@@ -20,9 +20,11 @@ nuitka_commands = [
     "--product-version=" + VERSION_BASE,
     "--copyright=" + COPYRIGHT,
     "--include-data-file=icon.ico=icon.ico",
+    "--include-data-file=icon.icns=icon.icns",
     "--windows-icon-from-ico=icon.ico",
-    "--macos-app-icon=icon.ico",
+    "--macos-app-icon=icon.icns",
     "--windows-console-mode=attach",
+    "--output-filename="+NAME,
     "main.py",
 ]
 print(" ".join(nuitka_commands))

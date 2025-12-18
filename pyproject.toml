@@ -19,5 +19,6 @@ ignore=["D401"]
 
 [dependency-groups]
 dev = [
+    "imageio>=2.37.2",
     "nuitka>=2.8.9",
 ]

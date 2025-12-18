@@ -783,11 +783,14 @@ class FontLoaderApp:
         self.root.title("FontLoaderSubRe 0.1.0")
         self.root.resizable(True, True)
         self.root.minsize(350, 160)
-        # load ico.ico as window icon
+
         try:
-            self.root.iconbitmap("icon.ico")
+            if platform.platform().startswith("mac"):
+                self.root.iconbitmap("icon.icns")
+            else:
+                self.root.iconbitmap("icon.ico")
         except Exception:
-            pass  # Ignore icon load errors
+            logging.debug("Failed to load window icon.",exc_info=True)
 
         self.root.drop_target_register(DND_FILES)
         self.root.dnd_bind("<<Drop>>", self.on_drop)
@@ -857,7 +860,7 @@ class FontLoaderApp:
                 "title_font_base": "字体库路径设置",  # Added
                 "lbl_current_path": "当前字体库路径:",  # Added
                 "msg_export": "导出字体完成。",
-                "msg_help": "使用方法：\n1. 将本程序移动到字体文件夹；\n2. 把字幕或其文件夹拖动到程序上，或用快捷方式；\n3. 字体库变更后请“更新索引”。",
+                "msg_help": "使用方法：\n1. 将本程序移动到字体文件夹（Windows）,或在目录中设置字体库路径；\n2. 把字幕或其文件夹拖动到程序、快捷方式（Windows），或窗口上；\n3. 字体库变更后请“更新索引”。",
                 "footer": f"GPLv2: {self.project_link}",
             },
             "zh_tw": {
@@ -878,7 +881,7 @@ class FontLoaderApp:
                 "title_font_base": "字型庫路徑設定",  # Added
                 "lbl_current_path": "當前字型庫路徑:",  # Added
                 "msg_export": "匯出字型完成。",
-                "msg_help": "使用方法：\n1. 將本程式移動到字型資料夾；\n2. 把字幕或其資料夾拖動到程式上，或用捷徑；\n3. 字型庫變更後請“更新索引”。",
+                "msg_help": "使用方法：\n1. 將本程式移動到字型資料夾（Windows）,或在目錄中設定字型庫路徑；\n2. 把字幕或其資料夾拖動到程式、捷徑（Windows），或視窗上；\n3. 字型庫變更後請“更新索引”。",
                 "footer": f"GPLv2: {self.project_link}",
             },
             "en_us": {
@@ -899,15 +902,15 @@ class FontLoaderApp:
                 "title_font_base": "Font Base Settings",  # Added
                 "lbl_current_path": "Current Base Path:",  # Added
                 "msg_export": "Font export complete.",
-                "msg_help": "Instructions:\n1. Move this program to your font folder;\n2. Drag and drop subtitles or their folder onto the program, or use a shortcut;\n3. Please 'Update Index' after font library changes.",
-                "footer": f"GPLv2: {self.project_link}",
+                "msg_help": "Instructions:\n1. Move this program to your font folder (Windows), or set the font base path in the menu;\n2. Drag and drop subtitle files or folders onto the program, shortcut (Windows), or window;\n3. Please 'Update Index' after changing the font base.",
             },
         }
 
         self.create_widgets()
         self.refresh_ui()
         if self.sub_path is None:
-            self.action_help()
+            # self.action_help()
+            pass
         else:
             self.load_fonts()
 
@@ -1242,7 +1245,7 @@ class FontLoaderApp:
 
 if __name__ == "__main__":
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.DEBUG,
         format="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
