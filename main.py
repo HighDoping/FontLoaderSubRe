@@ -903,6 +903,7 @@ class FontLoaderApp:
                 "lbl_current_path": "Current Base Path:",  # Added
                 "msg_export": "Font export complete.",
                 "msg_help": "Instructions:\n1. Move this program to your font folder (Windows), or set the font base path in the menu;\n2. Drag and drop subtitle files or folders onto the program, shortcut (Windows), or window;\n3. Please 'Update Index' after changing the font base.",
+                "footer": f"GPLv2: {self.project_link}",
             },
         }
 
