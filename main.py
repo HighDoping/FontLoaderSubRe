@@ -14,7 +14,8 @@ from tkinter import filedialog, messagebox, ttk
 from typing import Any, Optional
 
 from fontTools.ttLib import TTCollection, TTFont, TTLibFileIsCollectionError
-
+from tkinterdnd2 import DND_FILES, TkinterDnD
+import re
 
 class FontMetadataExtractor:
     """Extracts metadata from font files using fontTools."""
@@ -136,10 +137,30 @@ class FontMetadataExtractor:
         return localized_data
 
     def _get_decoded_string(self, record) -> Optional[str]:
-        try:
-            return record.toUnicode().strip()
-        except UnicodeDecodeError:
-            return None
+            try:
+                # 1. Standard decode based on font metadata
+                text = record.toUnicode()
+                
+                # 2. Heuristic Fix: Check for null bytes in the result
+                # If we see null bytes, the metadata lied, and it's likely UTF-16BE bytes 
+                # interpreted as ASCII/MacRoman.
+                if "\x00" in text:
+                    # Get raw bytes (string) and re-decode as UTF-16BE
+                    # string.encode("latin-1") recovers the original raw bytes 
+                    # from a 1:1 mapping if it was read as MacRoman/Latin1
+                    raw_bytes = record.string
+                    try:
+                        text = raw_bytes.decode("utf-16-be")
+                    except UnicodeDecodeError:
+                        # If that fails, clean the nulls from original text or discard
+                        text = text.replace("\x00", "")
+
+                return text.strip()
+            except UnicodeDecodeError:
+                return None
+            except Exception:
+                # Catch potential encoding issues
+                return None
 
     def _get_specific_name(self, name_table, name_id) -> str:
         rec = name_table.getName(name_id, 3, 1, 0x0409)  # Win Eng
@@ -343,6 +364,13 @@ class FontDatabase:
             """
             cursor.execute(query, (wild, wild, wild, wild))
             return cursor.fetchall()
+
+    def table_length(self,table_name:str)->int:
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+            row = cursor.fetchone()
+            return row[0] if row else 0
 
 
 class SessionFontManager:
@@ -581,6 +609,8 @@ def extract_ass_fonts(path: Path):
     fonts = set()
     p = Path(path)
 
+    logging.debug(f"Extract file: {p}")
+
     if p.is_file():
         files = [p]
     elif p.is_dir():
@@ -589,12 +619,14 @@ def extract_ass_fonts(path: Path):
         raise FileNotFoundError(f"Path not found: {path}")
 
     for fp in files:
-        try:
-            with fp.open("r", encoding="utf-8", errors="ignore") as fh:
-                lines = fh.read().splitlines()
-        except Exception:
-            # skip unreadable files
-            continue
+        for enc in ["utf-8", "utf-16", "gb18030", "utf-8-sig"]:
+            try:
+                with fp.open("r", encoding=enc) as fh:
+                    lines = fh.read().splitlines()
+                # If successful, break and process
+                break
+            except UnicodeError:
+                continue
 
         in_styles_section = False
         font_name_index = -1
@@ -727,13 +759,14 @@ def scan_fonts_in_directory(db: FontDatabase, dir_path: Path):
         "last_scan_time",
         str(int(sqlite3.datetime.datetime.now().timestamp())),
     )
-    db.metadata_set("file_count", str(final_stats["files_processed"]))
-    db.metadata_set("ps_name_count", str(final_stats["unique_font_names"]["ps"]))
+    # db.metadata_set("file_count", str(final_stats["files_processed"]))
+
+    db.metadata_set("file_count", str(db.table_length("files")))
+    db.metadata_set("ps_name_count", str(db.table_length("file_psnames")))
     db.metadata_set(
-        "family_name_count", str(final_stats["unique_font_names"]["family"])
-    )
-    db.metadata_set("full_name_count", str(final_stats["unique_font_names"]["full"]))
-    db.metadata_set("unique_id_count", str(final_stats["unique_font_names"]["unique"]))
+        "family_name_count", str(db.table_length("file_families"))    )
+    db.metadata_set("full_name_count", str(db.table_length("file_fullname")))
+    db.metadata_set("unique_id_count", str(db.table_length("file_uniqueids")))
 
     logging.debug(
         "Font scan complete. Processed %d files.", final_stats["files_processed"]
@@ -750,6 +783,9 @@ class FontLoaderApp:
         self.root.resizable(True, True)
         self.root.minsize(350, 160)
 
+        self.root.drop_target_register(DND_FILES)
+        self.root.dnd_bind("<<Drop>>", self.on_drop)
+
         # Center window on screen
         self.root.update_idletasks()
         window_width = self.root.winfo_reqwidth()
@@ -762,14 +798,20 @@ class FontLoaderApp:
 
         self.project_link = "https://github.com/HighDoping/FontLoaderSubRe"
 
-        self.current_path = Path.cwd()
-        if font_path is not None:
-            self.font_path = font_path
-        else:
-            self.font_path = self.current_path
         self.sub_path = sub_path
         self.db = FontDatabase()
         self.font_manager = SessionFontManager()
+        db_font_path=self.db.metadata_get("font_base_path")
+        if font_path is not None:
+            if db_font_path is None:
+                self.font_path = font_path
+            else:
+                self.font_path = Path(db_font_path)
+        else:
+            if db_font_path is not None:
+                self.font_path = Path(db_font_path)
+            else:
+                self.font_path = Path.cwd()
 
         self.logger = logging.getLogger(__name__)
 
@@ -796,14 +838,18 @@ class FontLoaderApp:
                 "status_1": "{loaded} 个字体加载成功，{errors} 个出错，{no_match} 个无匹配。",
                 "status_2": "索引中有 {index_fonts} 个字体，{index_names} 种名称；当前共 {subtitles} 个字幕。",
                 "btn_menu": "菜单",
-                "btn_details": "详情",  # Added
+                "btn_details": "详情",
                 "btn_ok": "确定",
                 "btn_close": "关闭",
+                "btn_change": "更改...",  # Added
                 "menu_update": "更新索引",
+                "menu_font_base": "设置字体库",  # Added
                 "msg_update_complete": "字体索引更新完成。",
                 "menu_export": "导出字体",
                 "menu_help": "FontLoaderSubRe帮助",
                 "menu_lang": "语言",
+                "title_font_base": "字体库路径设置",  # Added
+                "lbl_current_path": "当前字体库路径:",  # Added
                 "msg_export": "导出字体完成。",
                 "msg_help": "使用方法：\n1. 将本程序移动到字体文件夹；\n2. 把字幕或其文件夹拖动到程序上，或用快捷方式；\n3. 字体库变更后请“更新索引”。",
                 "footer": f"GPLv2: {self.project_link}",
@@ -813,14 +859,18 @@ class FontLoaderApp:
                 "status_1": "{loaded} 個字型載入成功，{errors} 個錯誤，{no_match} 個無匹配。",
                 "status_2": "索引中有 {index_fonts} 個字型，{index_names} 種名稱；當前共 {subtitles} 個字幕。",
                 "btn_menu": "菜單",
-                "btn_details": "詳情",  # Added
+                "btn_details": "詳情",
                 "btn_ok": "確定",
                 "btn_close": "關閉",
+                "btn_change": "更改...",  # Added
                 "menu_update": "更新索引",
+                "menu_font_base": "設定字型庫",  # Added
                 "msg_update_complete": "字型索引更新完成。",
                 "menu_export": "匯出字型",
                 "menu_help": "FontLoaderSubRe幫助",
                 "menu_lang": "語言",
+                "title_font_base": "字型庫路徑設定",  # Added
+                "lbl_current_path": "當前字型庫路徑:",  # Added
                 "msg_export": "匯出字型完成。",
                 "msg_help": "使用方法：\n1. 將本程式移動到字型資料夾；\n2. 把字幕或其資料夾拖動到程式上，或用捷徑；\n3. 字型庫變更後請“更新索引”。",
                 "footer": f"GPLv2: {self.project_link}",
@@ -830,14 +880,18 @@ class FontLoaderApp:
                 "status_1": "{loaded} fonts loaded, {errors} errors, {no_match} no match.",
                 "status_2": "Index: {index_fonts} fonts, {index_names} names; {subtitles} subtitles.",
                 "btn_menu": "Menu",
-                "btn_details": "Details",  # Added
+                "btn_details": "Details",
                 "btn_ok": "OK",
                 "btn_close": "Close",
+                "btn_change": "Change...",  # Added
                 "menu_update": "Update Index",
+                "menu_font_base": "Set Font Base",  # Added
                 "msg_update_complete": "Font index update complete.",
                 "menu_export": "Export Fonts",
                 "menu_help": "FontLoaderSubRe Help",
                 "menu_lang": "Language",
+                "title_font_base": "Font Base Settings",  # Added
+                "lbl_current_path": "Current Base Path:",  # Added
                 "msg_export": "Font export complete.",
                 "msg_help": "Instructions:\n1. Move this program to your font folder;\n2. Drag and drop subtitles or their folder onto the program, or use a shortcut;\n3. Please 'Update Index' after font library changes.",
                 "footer": f"GPLv2: {self.project_link}",
@@ -861,7 +915,7 @@ class FontLoaderApp:
             main_frame,
             text="",
             foreground="#0033CC",
-            font=("Microsoft YaHei UI", 16, "bold"),
+            font=("", 16, "bold"),
         )
         self.lbl_header.pack(anchor="w", pady=(0, 5))
 
@@ -962,6 +1016,9 @@ class FontLoaderApp:
             label=txt["menu_update"], command=self.action_update_index
         )
         self.popup_menu.add_command(
+            label=txt["menu_font_base"], command=self.action_set_font_base
+        )
+        self.popup_menu.add_command(
             label=txt["menu_export"], command=self.action_export
         )
         self.popup_menu.add_separator()
@@ -1010,6 +1067,51 @@ class FontLoaderApp:
             self.locales[self.current_lang]["menu_update"],
             self.locales[self.current_lang]["msg_update_complete"],
         )
+    def action_set_font_base(self):
+        txt = self.locales[self.current_lang]
+        self.logger.debug("Action: Set Font Base clicked")
+
+        # Create Modal Toplevel Window
+        top = tk.Toplevel(self.root)
+        top.title(txt["title_font_base"])
+        top.geometry("420x130")
+        top.resizable(False, False)
+
+        # Center relative to parent
+        try:
+            x = self.root.winfo_rootx() + (self.root.winfo_width() // 2) - 210
+            y = self.root.winfo_rooty() + (self.root.winfo_height() // 2) - 65
+            top.geometry(f"+{x}+{y}")
+        except Exception:
+            pass  # Fallback to default placement if calculation fails
+
+        # UI Elements
+        ttk.Label(top, text=txt["lbl_current_path"]).pack(pady=(15, 5), padx=15, anchor="w")
+
+        path_var = tk.StringVar(value=str(self.font_path))
+        entry = ttk.Entry(top, textvariable=path_var, state="readonly")
+        entry.pack(fill=tk.X, padx=15, pady=5)
+
+        def do_change():
+            new_path = filedialog.askdirectory(initialdir=self.font_path, parent=top)
+            if new_path:
+                self.font_path = Path(new_path)
+                self.db.metadata_set("font_base_path", str(self.font_path))
+                path_var.set(str(self.font_path))
+                self.logger.info(f"Font base changed to: {self.font_path}")
+                top.lift() # Bring focus back to dialog
+
+        # Button Row
+        btn_frame = ttk.Frame(top)
+        btn_frame.pack(fill=tk.X, pady=10, padx=15, side=tk.BOTTOM)
+
+        ttk.Button(btn_frame, text=txt["btn_close"], command=top.destroy).pack(side=tk.RIGHT)
+        ttk.Button(btn_frame, text=txt["btn_change"], command=do_change).pack(side=tk.RIGHT, padx=5)
+
+        # Make Modal
+        top.transient(self.root)
+        top.grab_set()
+        self.root.wait_window(top)
 
     def action_export(self):
         txt = self.locales[self.current_lang]
@@ -1018,7 +1120,7 @@ class FontLoaderApp:
         # Ask for export directory
         export_dir = filedialog.askdirectory(
             title=txt["menu_export"],
-            initialdir=str(self.current_path),
+            initialdir=str(Path.home()  ),
         )
         if not export_dir:
             return  # User cancelled
@@ -1050,12 +1152,43 @@ class FontLoaderApp:
         self.logger.debug("Action: Close clicked")
         self.font_manager.cleanup()
         self.root.destroy()
+    def _parse_drop_files(self, data):
+        """
+        Parses the string returned by tkinterdnd2.
+        Handles paths with spaces (wrapped in {}) and multiple files.
+        Returns a list of paths.
+        """
+        # Regex to capture content inside {} or non-whitespace sequences
+        pattern = r'\{(.+?)\}|(\S+)'
+        files = []
+        for match in re.finditer(pattern, data):
+            # group(1) is inside {}, group(2) is a standard word
+            path = match.group(1) or match.group(2)
+            if path:
+                files.append(Path(path))
+        return files
+
+    def on_drop(self, event):
+        """Handle file drops from Finder/Explorer"""
+        dropped_files = self._parse_drop_files(event.data)
+        
+        if not dropped_files:
+            return
+
+        # Take the first dropped file/folder
+        new_path = dropped_files[0]
+        self.logger.info(f"File dropped: {new_path}")
+        
+        # Update sub_path and reload
+        self.sub_path = new_path
+        self.load_fonts()
 
     def load_fonts(self):
         """Checks if the application was launched by dropping a file onto it."""
         file_path = self.sub_path
 
         sub_count, font_list = extract_ass_fonts(file_path)
+        self.logger.debug(f"Loading font: {font_list}")
 
         # Prepare text output
         self.txt_details.config(state="normal")
@@ -1103,11 +1236,11 @@ class FontLoaderApp:
 
 if __name__ == "__main__":
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.DEBUG,
         format="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-    root = tk.Tk()
+    root = TkinterDnD.Tk()
 
     style = ttk.Style()
     available_themes = style.theme_names()
@@ -1122,10 +1255,18 @@ if __name__ == "__main__":
             style.theme_use("clam")
     else:
         style.theme_use(available_themes[0])
+    
+    if platform.platform().startswith("Windows"):
 
-    sub_path_arg = sys.argv[1] if len(sys.argv) > 1 else None
-    sub_path = Path(sub_path_arg) if sub_path_arg else None
-    font_path = Path.cwd()
+        sub_path_arg = sys.argv[1] if len(sys.argv) > 1 else None
+        sub_path = Path(sub_path_arg) if sub_path_arg else None
+        font_path = Path.cwd()
 
-    app = FontLoaderApp(root, sub_path=sub_path, font_path=font_path)
+        app = FontLoaderApp(root, sub_path=sub_path, font_path=font_path)
+    elif platform.platform().startswith("mac") or platform.platform().startswith("Linux"):
+
+        sub_path_arg = sys.argv[1] if len(sys.argv) > 1 else None
+        sub_path = Path(sub_path_arg) if sub_path_arg else None
+        app = FontLoaderApp(root, sub_path=sub_path)
+
     root.mainloop()

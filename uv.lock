@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.12"
 
 [[package]]
@@ -8,7 +8,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "fonttools" },
-    { name = "tksvg" },
+    { name = "tkinterdnd2" },
 ]
 
 [package.dev-dependencies]
@@ -19,7 +19,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "fonttools", specifier = ">=4.61.0" },
-    { name = "tksvg", specifier = ">=0.7.4" },
+    { name = "tkinterdnd2", specifier = ">=0.4.3" },
 ]
 
 [package.metadata.requires-dev]
@@ -86,12 +86,12 @@ wheels = [
 ]
 
 [[package]]
-name = "tksvg"
-version = "0.7.4"
+name = "tkinterdnd2"
+version = "0.4.3"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/c5/73/39960696fa563162edcf21bef52453cc7cfb965a0bb1e413730237de0aa3/tksvg-0.7.4.tar.gz", hash = "sha256:e451c4301814306547afca80680e6db0cc6720b7d6cc3dca56beb17c2b29c0f5", size = 50395, upload-time = "2021-08-02T13:54:43.507Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/6e/2a/9d50ee58c7a60bf0c8d4bd8030b4afc29c8bf60158f95dbc89e8081d29d2/tkinterdnd2-0.4.3.tar.gz", hash = "sha256:03a932a11b42ab139c4552b414aa10ee8a087b8386b52baca8c62939760c2ef2", size = 444595, upload-time = "2025-02-28T12:55:50.861Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c1/31/bb2da3f9ea480b273d3319430e24bb74e8b202fb8a90fa0a3689b9e5c51f/tksvg-0.7.4-py3-none-win_amd64.whl", hash = "sha256:1e96830e3e92d12390aee3460dab2aab169bd3b1cb59ba478329c1e6bc3edd2a", size = 173345, upload-time = "2021-08-02T13:54:42.616Z" },
+    { url = "https://files.pythonhosted.org/packages/08/c3/e04f004a53c00dc01126b6f998264cef672c6883c36aa4bd65845a8eb4c0/tkinterdnd2-0.4.3-py3-none-any.whl", hash = "sha256:8804f5d2e2a99713ec93e85384397fec6bf66fdf2065e3750938d55018971c4a", size = 493006, upload-time = "2025-02-28T12:55:47.501Z" },
 ]
 
 [[package]]

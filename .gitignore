@@ -11,3 +11,4 @@ wheels/
 FontLoaderSubRe.db
 dev/
 main.dist/
+main.app
