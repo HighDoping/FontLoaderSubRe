@@ -1,0 +1,17 @@
+[project]
+name = "FontLoaderSubRe"
+version = "0.1.0"
+description = "Multi-platform FontLoaderSub Rewritten in Python"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fonttools>=4.61.0",
+]
+
+[tool.ruff]
+line-length = 88
+select = ["ALL"]
+fix = true
+
+[tool.ruff.lint]
+ignore=["D401"]
