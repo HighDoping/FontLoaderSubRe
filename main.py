@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tkinter as tk
 import webbrowser
-from multiprocessing import Pool, cpu_count
+from multiprocessing import Pool, cpu_count, freeze_support
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Any, Optional
@@ -210,6 +210,10 @@ class FontDatabase:
     """Manages the SQLite database for font metadata storage and retrieval."""
 
     def __init__(self, db_name="FontLoaderSubRe.db"):
+        if platform.system() in ["Darwin", "Linux"]:
+            db_path = Path.home() / ".fontloadersubre"
+            db_path.mkdir(parents=True, exist_ok=True)
+            db_name = str(db_path / db_name)
         self.db_name = db_name
         self._init_db()
 
@@ -785,10 +789,18 @@ class FontLoaderApp:
         self.root.minsize(350, 160)
 
         try:
-            if platform.platform().startswith("mac"):
-                self.root.iconbitmap("icon.icns")
+            if platform.system() == "Darwin":
+                if "__compiled__" in globals():
+                    pass
+                else:
+                    self.root.iconphoto(
+                        True,
+                        tk.PhotoImage(
+                            file=Path(__file__).parent / "resources" / "icon.png"
+                        ),
+                    )
             else:
-                self.root.iconbitmap("icon.ico")
+                self.root.iconbitmap(Path(__file__).parent / "resources" / "icon.ico")
         except Exception:
             logging.debug("Failed to load window icon.",exc_info=True)
 
@@ -820,7 +832,10 @@ class FontLoaderApp:
             if db_font_path is not None:
                 self.font_path = Path(db_font_path)
             else:
-                self.font_path = Path.cwd()
+                if platform.system() in ["Darwin", "Linux"]:
+                    self.font_path = Path.home()
+                else:
+                    self.font_path = Path.cwd()
 
         self.logger = logging.getLogger(__name__)
 
@@ -1205,6 +1220,7 @@ class FontLoaderApp:
         self.txt_details.delete("1.0", tk.END)
 
         load_status = {"loaded": [], "errors": [], "not_match": []}
+        log_lines = []
 
         for font in font_list:
             res = self.db.search_by_font(font)
@@ -1233,7 +1249,17 @@ class FontLoaderApp:
                 load_status["not_match"].append(font)
                 log_line = f"[??] {font}\n"
 
-            self.txt_details.insert(tk.END, log_line)
+            log_lines.append(log_line)
+
+        # Sort log lines: [ok] first, then [xx], then [??]
+        log_lines.sort(
+            key=lambda x: (
+                0 if x.startswith("[ok]") else 1 if x.startswith("[xx]") else 2
+            )
+        )
+
+        for line in log_lines:
+            self.txt_details.insert(tk.END, line)
 
         self.txt_details.config(state="disabled")
 
@@ -1245,6 +1271,7 @@ class FontLoaderApp:
 
 
 if __name__ == "__main__":
+    freeze_support()
     logging.basicConfig(
         level=logging.DEBUG,
         format="%(asctime)s [%(levelname)s] %(message)s",
@@ -1254,26 +1281,26 @@ if __name__ == "__main__":
 
     style = ttk.Style()
     available_themes = style.theme_names()
-    if platform.platform().startswith("Windows"):
+    if platform.system() == "Windows":
         if "winnative" in available_themes:
             style.theme_use("winnative")
-    elif platform.platform().startswith("Darwin"):
+    elif platform.system() == "Darwin":
         if "aqua" in available_themes:
             style.theme_use("aqua")
-    elif platform.platform().startswith("Linux"):
+    elif platform.system() == "Linux":
         if "clam" in available_themes:
             style.theme_use("clam")
     else:
         style.theme_use(available_themes[0])
 
-    if platform.platform().startswith("Windows"):
+    if platform.system() == "Windows":
 
         sub_path_arg = sys.argv[1] if len(sys.argv) > 1 else None
         sub_path = Path(sub_path_arg) if sub_path_arg else None
         font_path = Path.cwd()
 
         app = FontLoaderApp(root, sub_path=sub_path, font_path=font_path)
-    elif platform.platform().startswith("mac") or platform.platform().startswith("Linux"):
+    elif platform.system() in ["Darwin", "Linux"]:
 
         sub_path_arg = sys.argv[1] if len(sys.argv) > 1 else None
         sub_path = Path(sub_path_arg) if sub_path_arg else None
