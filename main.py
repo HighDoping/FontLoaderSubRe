@@ -10,7 +10,7 @@ import tkinter as tk
 import webbrowser
 from multiprocessing import Pool, cpu_count
 from pathlib import Path
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 from typing import Any, Optional
 
 from fontTools.ttLib import TTCollection, TTFont, TTLibFileIsCollectionError
@@ -558,12 +558,12 @@ class SessionFontManager:
 
     def cleanup(self):
         """Iterates through status and unloads all loaded fonts."""
-        self.logger.info("Starting cleanup...")
+        self.logger.debug("Starting cleanup...")
         hashes = list(self.status.keys())
         for h in hashes:
             if self.status[h]["loaded"]:
                 self.unload_font(h)
-        self.logger.info("Cleanup complete.")
+        self.logger.debug("Cleanup complete.")
 
     def __enter__(self):
         return self
@@ -735,7 +735,7 @@ def scan_fonts_in_directory(db: FontDatabase, dir_path: Path):
     db.metadata_set("full_name_count", str(final_stats["unique_font_names"]["full"]))
     db.metadata_set("unique_id_count", str(final_stats["unique_font_names"]["unique"]))
 
-    logging.info(
+    logging.debug(
         "Font scan complete. Processed %d files.", final_stats["files_processed"]
     )
     return final_stats
@@ -746,9 +746,20 @@ class FontLoaderApp:
         self, root, sub_path: Optional[Path] = None, font_path: Optional[Path] = None
     ):
         self.root = root
-        self.root.title("FontLoaderSubRe")
+        self.root.title("FontLoaderSubRe 0.1.0")
         self.root.resizable(True, True)
-        self.root.minsize(350, 160)  # Prevent it from being too small
+        self.root.minsize(350, 160)
+
+        # Center window on screen
+        self.root.update_idletasks()
+        window_width = self.root.winfo_reqwidth()
+        window_height = self.root.winfo_reqheight()
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        x = (screen_width - window_width) // 2
+        y = (screen_height - window_height) // 2
+        self.root.geometry(f"+{x}+{y}")
+
         self.project_link = "https://github.com/HighDoping/FontLoaderSubRe"
 
         self.current_path = Path.cwd()
@@ -773,6 +784,7 @@ class FontLoaderApp:
         }
 
         # --- State ---
+        self.details_visible = False  # New state for foldable details
         if self.db.metadata_get("ui_language") is None:
             self.db.metadata_set("ui_language", "en_us")
         self.current_lang = self.db.metadata_get("ui_language")  # Default
@@ -784,13 +796,15 @@ class FontLoaderApp:
                 "status_1": "{loaded} 个字体加载成功，{errors} 个出错，{no_match} 个无匹配。",
                 "status_2": "索引中有 {index_fonts} 个字体，{index_names} 种名称；当前共 {subtitles} 个字幕。",
                 "btn_menu": "菜单",
+                "btn_details": "详情",  # Added
                 "btn_ok": "确定",
                 "btn_close": "关闭",
                 "menu_update": "更新索引",
+                "msg_update_complete": "字体索引更新完成。",
                 "menu_export": "导出字体",
                 "menu_help": "FontLoaderSubRe帮助",
                 "menu_lang": "语言",
-                "msg_export": "正在导出字体...",
+                "msg_export": "导出字体完成。",
                 "msg_help": "使用方法：\n1. 将本程序移动到字体文件夹；\n2. 把字幕或其文件夹拖动到程序上，或用快捷方式；\n3. 字体库变更后请“更新索引”。",
                 "footer": f"GPLv2: {self.project_link}",
             },
@@ -799,13 +813,15 @@ class FontLoaderApp:
                 "status_1": "{loaded} 個字型載入成功，{errors} 個錯誤，{no_match} 個無匹配。",
                 "status_2": "索引中有 {index_fonts} 個字型，{index_names} 種名稱；當前共 {subtitles} 個字幕。",
                 "btn_menu": "菜單",
+                "btn_details": "詳情",  # Added
                 "btn_ok": "確定",
                 "btn_close": "關閉",
                 "menu_update": "更新索引",
+                "msg_update_complete": "字型索引更新完成。",
                 "menu_export": "匯出字型",
                 "menu_help": "FontLoaderSubRe幫助",
                 "menu_lang": "語言",
-                "msg_export": "正在匯出字型...",
+                "msg_export": "匯出字型完成。",
                 "msg_help": "使用方法：\n1. 將本程式移動到字型資料夾；\n2. 把字幕或其資料夾拖動到程式上，或用捷徑；\n3. 字型庫變更後請“更新索引”。",
                 "footer": f"GPLv2: {self.project_link}",
             },
@@ -814,13 +830,15 @@ class FontLoaderApp:
                 "status_1": "{loaded} fonts loaded, {errors} errors, {no_match} no match.",
                 "status_2": "Index: {index_fonts} fonts, {index_names} names; {subtitles} subtitles.",
                 "btn_menu": "Menu",
+                "btn_details": "Details",  # Added
                 "btn_ok": "OK",
                 "btn_close": "Close",
                 "menu_update": "Update Index",
+                "msg_update_complete": "Font index update complete.",
                 "menu_export": "Export Fonts",
                 "menu_help": "FontLoaderSubRe Help",
                 "menu_lang": "Language",
-                "msg_export": "Exporting fonts...",
+                "msg_export": "Font export complete.",
                 "msg_help": "Instructions:\n1. Move this program to your font folder;\n2. Drag and drop subtitles or their folder onto the program, or use a shortcut;\n3. Please 'Update Index' after font library changes.",
                 "footer": f"GPLv2: {self.project_link}",
             },
@@ -845,26 +863,42 @@ class FontLoaderApp:
             foreground="#0033CC",
             font=("Microsoft YaHei UI", 16, "bold"),
         )
-        # CHANGED: Reduced bottom gap (was 15 -> 5)
         self.lbl_header.pack(anchor="w", pady=(0, 5))
 
         # 2. Status Lines (Dynamic Text)
         self.lbl_status1 = ttk.Label(main_frame, text="")
-        # CHANGED: Reduced bottom gap (was 5 -> 0)
         self.lbl_status1.pack(anchor="w", pady=(0, 0))
 
         self.lbl_status2 = ttk.Label(main_frame, text="")
-        # CHANGED: Reduced bottom gap (was 20 -> 10)
         self.lbl_status2.pack(anchor="w", pady=(0, 10))
 
-        # 3. Buttons
-        # CHANGED: Reduced vertical padding (was 10 -> 5)
-        # Added side=tk.BOTTOM and anchor to push buttons down when resizing
+        # 3. Details Frame (Hidden by default)
+        self.frame_details = ttk.Frame(main_frame)
+        self.txt_details = tk.Text(
+            self.frame_details,
+            height=10,
+            width=50,
+            state="disabled",
+            font=("Consolas", 9),
+        )
+        scroll_details = ttk.Scrollbar(
+            self.frame_details, orient="vertical", command=self.txt_details.yview
+        )
+        self.txt_details.configure(yscrollcommand=scroll_details.set)
+
+        self.txt_details.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scroll_details.pack(side=tk.RIGHT, fill=tk.Y)
+        # Note: frame_details is packed in toggle_details()
+
+        # 4. Buttons
         btn_frame = ttk.Frame(main_frame)
         btn_frame.pack(fill=tk.X, pady=5, side=tk.BOTTOM, anchor="s")
 
         self.btn_menu = ttk.Button(btn_frame, command=self.show_menu)
         self.btn_menu.pack(side=tk.LEFT, padx=(0, 5))
+
+        self.btn_details = ttk.Button(btn_frame, command=self.toggle_details)
+        self.btn_details.pack(side=tk.LEFT, padx=(0, 5))
 
         self.btn_close = ttk.Button(btn_frame, command=self.action_close)
         self.btn_close.pack(side=tk.RIGHT, padx=(5, 0))
@@ -872,19 +906,51 @@ class FontLoaderApp:
         self.btn_ok = ttk.Button(btn_frame, command=self.action_ok)
         self.btn_ok.pack(side=tk.RIGHT)
 
-        # 4. Footer
+        # 5. Footer
         footer_frame = ttk.Frame(self.root)
         footer_frame.pack(fill=tk.X, side=tk.BOTTOM)
 
         ttk.Separator(footer_frame, orient="horizontal").pack(fill=tk.X)
 
-        # CHANGED: Reduced footer padding (was "10 5" -> "5 2")
         link_inner_frame = ttk.Frame(footer_frame, padding="5 2")
         link_inner_frame.pack(fill=tk.X, anchor="w")
 
         self.lbl_footer = ttk.Label(link_inner_frame, foreground="blue", cursor="hand2")
         self.lbl_footer.pack(side=tk.LEFT)
         self.lbl_footer.bind("<Button-1>", lambda e: webbrowser.open(self.project_link))
+
+    def toggle_details(self):
+        """Toggles the visibility of the details log."""
+        if self.details_visible:
+            self.frame_details.pack_forget()
+            self.details_visible = False
+            # self.root.geometry("") # Reset to allow shrinking if desired
+        else:
+            self.frame_details.pack(
+                fill=tk.BOTH,
+                expand=True,
+                before=self.lbl_header.master.pack_slaves()[-1],
+            )
+            self.details_visible = True
+
+    def refresh_ui(self):
+        """Updates all labels based on current stats and language"""
+        txt = self.locales[self.current_lang]
+
+        self.lbl_header.config(text=txt["header"])
+
+        self.updata_stats()
+        s1 = txt["status_1"].format(**self.stats)
+        s2 = txt["status_2"].format(**self.stats)
+
+        self.lbl_status1.config(text=s1)
+        self.lbl_status2.config(text=s2)
+
+        self.btn_menu.config(text=txt["btn_menu"])
+        self.btn_details.config(text=txt["btn_details"])
+        self.btn_ok.config(text=txt["btn_ok"])
+        self.btn_close.config(text=txt["btn_close"])
+        self.lbl_footer.config(text=txt["footer"])
 
     def create_popup_menu(self):
         """Recreates the popup menu to ensure language is correct"""
@@ -894,6 +960,9 @@ class FontLoaderApp:
         # Actions
         self.popup_menu.add_command(
             label=txt["menu_update"], command=self.action_update_index
+        )
+        self.popup_menu.add_command(
+            label=txt["menu_export"], command=self.action_export
         )
         self.popup_menu.add_separator()
         self.popup_menu.add_command(label=txt["menu_help"], command=self.action_help)
@@ -932,36 +1001,40 @@ class FontLoaderApp:
             ]
         )
 
-    def refresh_ui(self):
-        """Updates all labels based on current stats and language"""
-        txt = self.locales[self.current_lang]
-
-        self.lbl_header.config(text=txt["header"])
-
-        # Inject numbers into the translated strings
-        self.updata_stats()
-        s1 = txt["status_1"].format(**self.stats)
-        s2 = txt["status_2"].format(**self.stats)
-
-        self.lbl_status1.config(text=s1)
-        self.lbl_status2.config(text=s2)
-
-        self.btn_menu.config(text=txt["btn_menu"])
-        self.btn_ok.config(text=txt["btn_ok"])
-        self.btn_close.config(text=txt["btn_close"])
-        self.lbl_footer.config(text=txt["footer"])
-
-    # --- Pseudo Actions ---
-
     def action_update_index(self):
         """Simulates scanning/loading fonts by changing numbers."""
         base_path = self.font_path
         scan_fonts_in_directory(self.db, Path(base_path))
         self.refresh_ui()
+        messagebox.showinfo(
+            self.locales[self.current_lang]["menu_update"],
+            self.locales[self.current_lang]["msg_update_complete"],
+        )
 
     def action_export(self):
         txt = self.locales[self.current_lang]
         self.logger.debug(f"Action: {txt['msg_export']}")
+
+        # Ask for export directory
+        export_dir = filedialog.askdirectory(
+            title=txt["menu_export"],
+            initialdir=str(self.current_path),
+        )
+        if not export_dir:
+            return  # User cancelled
+        export_path = Path(export_dir)
+        # Export loaded fonts
+        for font_hash, info in self.font_manager.status.items():
+            if info["loaded"]:
+                src_path = info["sys_path"]
+                if src_path and src_path.exists():
+                    dest_path = export_path / src_path.name
+                    try:
+                        shutil.copy(src_path, dest_path)
+                    except Exception as e:
+                        self.logger.error(
+                            "Failed to export font %s: %s", src_path.name, e
+                        )
 
         messagebox.showinfo(txt["menu_export"], txt["msg_export"])
 
@@ -979,29 +1052,48 @@ class FontLoaderApp:
         self.root.destroy()
 
     def load_fonts(self):
-        """Checks if the application was launched by dropping a file onto it.
-
-        sys.argv[0] is the script/exe path.
-        sys.argv[1] is the dropped file path.
-        """
+        """Checks if the application was launched by dropping a file onto it."""
         file_path = self.sub_path
 
         sub_count, font_list = extract_ass_fonts(file_path)
 
+        # Prepare text output
+        self.txt_details.config(state="normal")
+        self.txt_details.delete("1.0", tk.END)
+
         load_status = {"loaded": [], "errors": [], "not_match": []}
+
         for font in font_list:
             res = self.db.search_by_font(font)
-            if res != []:
-                font_path = (Path(self.font_path) / Path(res[0][0])).absolute()
+            log_line = ""
+
+            if res:
+                # DB Returns: [(path, hash), ...]
+                # res[0][0] is the path relative to the scan root (stored in DB)
+                relative_path_str = res[0][0]
+                font_path = (Path(self.font_path) / Path(relative_path_str)).absolute()
                 font_hash = res[0][1]
-                if self.font_manager.load_font(font_path, font_hash):
+
+                success = self.font_manager.load_font(font_path, font_hash)
+
+                if success:
                     load_status["loaded"].append(font)
+                    log_line = f"[ok] {font} > {relative_path_str}\n"
                 else:
                     load_status["errors"].append(font)
+                    # Retrieve detailed error from session manager
+                    msg = self.font_manager.status.get(font_hash, {}).get(
+                        "message", "Unknown Error"
+                    )
+                    log_line = f"[xx] {font} > {relative_path_str} Error: {msg}\n"
             else:
                 load_status["not_match"].append(font)
-        self.logger.info(self.font_manager.status)
-        self.logger.info(load_status)
+                log_line = f"[??] {font}\n"
+
+            self.txt_details.insert(tk.END, log_line)
+
+        self.txt_details.config(state="disabled")
+
         self.stats["subtitles"] = sub_count
         self.stats["loaded"] = len(load_status["loaded"])
         self.stats["errors"] = len(load_status["errors"])
@@ -1017,17 +1109,23 @@ if __name__ == "__main__":
     )
     root = tk.Tk()
 
-    # Try to set a native look
-    try:
-        style = ttk.Style()
-        # 'vista' or 'winnative' on Windows, 'clam' usually available on Linux
-        available_themes = style.theme_names()
-        if "vista" in available_themes:
-            style.theme_use("vista")
-        elif "clam" in available_themes:
+    style = ttk.Style()
+    available_themes = style.theme_names()
+    if platform.platform().startswith("Windows"):
+        if "winnative" in available_themes:
+            style.theme_use("winnative")
+    elif platform.platform().startswith("Darwin"):
+        if "aqua" in available_themes:
+            style.theme_use("aqua")
+    elif platform.platform().startswith("Linux"):
+        if "clam" in available_themes:
             style.theme_use("clam")
-    except:
-        pass
+    else:
+        style.theme_use(available_themes[0])
 
-    app = FontLoaderApp(root)
+    sub_path_arg = sys.argv[1] if len(sys.argv) > 1 else None
+    sub_path = Path(sub_path_arg) if sub_path_arg else None
+    font_path = Path.cwd()
+
+    app = FontLoaderApp(root, sub_path=sub_path, font_path=font_path)
     root.mainloop()

@@ -16,8 +16,6 @@ Drag-and-drop ASS/SSA subtitles and it will load corresponding font files in its
 
 ## TODO
 
-[ ] executable release.
-
 [ ] macOS compatibility.
 
 [ ] Linux compatibility.

@@ -10,3 +10,4 @@ wheels/
 .venv
 FontLoaderSubRe.db
 dev/
+main.dist/
