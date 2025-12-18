@@ -2,6 +2,7 @@ import ctypes
 import hashlib
 import logging
 import platform
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -15,7 +16,7 @@ from typing import Any, Optional
 
 from fontTools.ttLib import TTCollection, TTFont, TTLibFileIsCollectionError
 from tkinterdnd2 import DND_FILES, TkinterDnD
-import re
+
 
 class FontMetadataExtractor:
     """Extracts metadata from font files using fontTools."""
@@ -782,6 +783,11 @@ class FontLoaderApp:
         self.root.title("FontLoaderSubRe 0.1.0")
         self.root.resizable(True, True)
         self.root.minsize(350, 160)
+        # load ico.ico as window icon
+        try:
+            self.root.iconbitmap("icon.ico")
+        except Exception:
+            pass  # Ignore icon load errors
 
         self.root.drop_target_register(DND_FILES)
         self.root.dnd_bind("<<Drop>>", self.on_drop)
@@ -1171,14 +1177,14 @@ class FontLoaderApp:
     def on_drop(self, event):
         """Handle file drops from Finder/Explorer"""
         dropped_files = self._parse_drop_files(event.data)
-        
+
         if not dropped_files:
             return
 
         # Take the first dropped file/folder
         new_path = dropped_files[0]
         self.logger.info(f"File dropped: {new_path}")
-        
+
         # Update sub_path and reload
         self.sub_path = new_path
         self.load_fonts()
@@ -1236,7 +1242,7 @@ class FontLoaderApp:
 
 if __name__ == "__main__":
     logging.basicConfig(
-        level=logging.DEBUG,
+        level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
@@ -1255,7 +1261,7 @@ if __name__ == "__main__":
             style.theme_use("clam")
     else:
         style.theme_use(available_themes[0])
-    
+
     if platform.platform().startswith("Windows"):
 
         sub_path_arg = sys.argv[1] if len(sys.argv) > 1 else None
