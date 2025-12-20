@@ -368,7 +368,15 @@ class FontDatabase:
                    OR fuid.unique_id LIKE ?
             """
             cursor.execute(query, (wild, wild, wild, wild))
-            return cursor.fetchall()
+            results = cursor.fetchall()
+
+            # If no results and font_name starts with '@', try again without '@'
+            if not results and font_name.startswith("@"):
+                wild = f"%{font_name[1:]}%"
+                cursor.execute(query, (wild, wild, wild, wild))
+                results = cursor.fetchall()
+
+            return results
 
     def table_length(self,table_name:str)->int:
         with self._get_conn() as conn:
@@ -1217,7 +1225,8 @@ class FontLoaderApp:
 
         # Prepare text output
         self.txt_details.config(state="normal")
-        self.txt_details.delete("1.0", tk.END)
+        # Don't clear, just append
+        # self.txt_details.delete("1.0", tk.END)
 
         load_status = {"loaded": [], "errors": [], "not_match": []}
         log_lines = []
@@ -1263,10 +1272,11 @@ class FontLoaderApp:
 
         self.txt_details.config(state="disabled")
 
-        self.stats["subtitles"] = sub_count
-        self.stats["loaded"] = len(load_status["loaded"])
-        self.stats["errors"] = len(load_status["errors"])
-        self.stats["no_match"] = len(load_status["not_match"])
+        # Append to stats instead of replacing
+        self.stats["subtitles"] += sub_count
+        self.stats["loaded"] += len(load_status["loaded"])
+        self.stats["errors"] += len(load_status["errors"])
+        self.stats["no_match"] += len(load_status["not_match"])
         self.refresh_ui()
 
 
