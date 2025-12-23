@@ -354,7 +354,7 @@ class FontDatabase:
         with self._get_conn() as conn:
             cursor = conn.cursor()
             wild = f"%{font_name}%"
-            # Union all tables for a "Global Search"
+            # Exact match for font_name, LIKE for other names
             query = """
                 SELECT DISTINCT f.path, f.file_hash 
                 FROM files f
@@ -362,18 +362,19 @@ class FontDatabase:
                 LEFT JOIN file_families fam ON f.file_hash = fam.file_hash
                 LEFT JOIN file_psnames fps ON f.file_hash = fps.file_hash
                 LEFT JOIN file_uniqueids fuid ON f.file_hash = fuid.file_hash
-                WHERE ff.font_name LIKE ? 
+                WHERE ff.font_name = ? 
                    OR fam.family_name LIKE ? 
                    OR fps.ps_name LIKE ? 
                    OR fuid.unique_id LIKE ?
             """
-            cursor.execute(query, (wild, wild, wild, wild))
+            cursor.execute(query, (font_name, wild, wild, wild))
             results = cursor.fetchall()
 
             # If no results and font_name starts with '@', try again without '@'
             if not results and font_name.startswith("@"):
-                wild = f"%{font_name[1:]}%"
-                cursor.execute(query, (wild, wild, wild, wild))
+                stripped_name = font_name[1:]
+                wild = f"%{stripped_name}%"
+                cursor.execute(query, (stripped_name, wild, wild, wild))
                 results = cursor.fetchall()
 
             return results
