@@ -12,16 +12,18 @@ import webbrowser
 from multiprocessing import Pool, cpu_count, freeze_support
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
-from typing import Any, Optional
+from typing import Any, ClassVar, Optional
+import threading
 
 from fontTools.ttLib import TTCollection, TTFont, TTLibFileIsCollectionError
 from tkinterdnd2 import DND_FILES, TkinterDnD
 
+logger = logging.getLogger(__name__)
 
 class FontMetadataExtractor:
     """Extracts metadata from font files using fontTools."""
 
-    LANG_ID_MAP = {
+    LANG_ID_MAP: ClassVar[[int, str]] = {
         0x0409: "English (US)",
         0x0809: "English (UK)",
         0x0411: "Japanese",
@@ -32,7 +34,7 @@ class FontMetadataExtractor:
     }
 
     def __init__(self):
-        self.logger = logging.getLogger(__name__)
+        pass
 
     def analyze(self, filepath: str | Path) -> dict[str, Any]:
         path_obj = Path(filepath)
@@ -138,30 +140,19 @@ class FontMetadataExtractor:
         return localized_data
 
     def _get_decoded_string(self, record) -> Optional[str]:
-            try:
-                # 1. Standard decode based on font metadata
-                text = record.toUnicode()
-                
-                # 2. Heuristic Fix: Check for null bytes in the result
-                # If we see null bytes, the metadata lied, and it's likely UTF-16BE bytes 
-                # interpreted as ASCII/MacRoman.
-                if "\x00" in text:
-                    # Get raw bytes (string) and re-decode as UTF-16BE
-                    # string.encode("latin-1") recovers the original raw bytes 
-                    # from a 1:1 mapping if it was read as MacRoman/Latin1
-                    raw_bytes = record.string
-                    try:
-                        text = raw_bytes.decode("utf-16-be")
-                    except UnicodeDecodeError:
-                        # If that fails, clean the nulls from original text or discard
-                        text = text.replace("\x00", "")
-
-                return text.strip()
-            except UnicodeDecodeError:
-                return None
-            except Exception:
-                # Catch potential encoding issues
-                return None
+        try:
+            text = record.toUnicode()
+            if "\x00" in text:
+                raw_bytes = record.string
+                try:
+                    text = raw_bytes.decode("utf-16-be")
+                except UnicodeDecodeError:
+                    text = text.replace("\x00", "")
+            return text.strip()
+        except UnicodeDecodeError:
+            return None
+        except Exception:
+            return None
 
     def _get_specific_name(self, name_table, name_id) -> str:
         rec = name_table.getName(name_id, 3, 1, 0x0409)  # Win Eng
@@ -202,6 +193,11 @@ class FontMetadataExtractor:
                 if names.get("full"):
                     res_dict["full_names"].add(names["full"])
 
+        res_dict["ps_names"].discard("")
+        res_dict["unique_ids"].discard("")
+        res_dict["family_names"].discard("")
+        res_dict["full_names"].discard("")
+
         # Convert sets to lists for serialization
         return {k: list(v) if isinstance(v, set) else v for k, v in res_dict.items()}
 
@@ -220,8 +216,8 @@ class FontDatabase:
     def _get_conn(self):
         conn = sqlite3.connect(self.db_name)
         # PERFORMANCE PRAGMAS
-        conn.execute("PRAGMA journal_mode = WAL")  # Write-Ahead Logging for speed
-        conn.execute("PRAGMA synchronous = NORMAL")  # Reduce fsync calls
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA synchronous = NORMAL")
         conn.execute("PRAGMA foreign_keys = ON")
         return conn
 
@@ -380,9 +376,23 @@ class FontDatabase:
             return results
 
     def table_length(self,table_name:str)->int:
+        # Whitelist of allowed table names to prevent SQL injection
+        allowed_tables = {
+            "files",
+            "file_fullname",
+            "file_families",
+            "file_psnames",
+            "file_uniqueids",
+            "metadata",
+        }
+        if table_name not in allowed_tables:
+            raise ValueError(f"Invalid table name: {table_name}")
+
         with self._get_conn() as conn:
             cursor = conn.cursor()
-            cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+            # Safe to use f-string here because table_name is validated against whitelist
+            query = f"SELECT COUNT(*) FROM {table_name}"  # noqa: S608
+            cursor.execute(query)
             row = cursor.fetchone()
             return row[0] if row else 0
 
@@ -395,18 +405,6 @@ class SessionFontManager:
 
     def __init__(self):
         self.current_os = platform.system()
-        self.logger = logging.getLogger(__name__)
-
-        # Structure:
-        # {
-        #   "md5_hash_string": {
-        #       "hash": "md5_hash_string",
-        #       "file_path": Path(Original Input Path),
-        #       "sys_path": Path(Installed System Path) | None,
-        #       "loaded": bool,
-        #       "message": "Status message"
-        #   }
-        # }
         self.status: dict[str, dict[str, Any]] = {}
 
     def _calculate_file_md5(self, path: Path) -> str:
@@ -415,7 +413,7 @@ class SessionFontManager:
             with path.open("rb") as f:
                 return hashlib.md5(f.read()).hexdigest().lower()
         except OSError as e:
-            self.logger.error("Failed to read file for hashing '%s': %s", path, e)
+            logger.error("Failed to read file for hashing '%s': %s", path, e)
             return ""
 
     def _get_font_destination_path(
@@ -455,25 +453,25 @@ class SessionFontManager:
 
         # 2. Check if already loaded
         if self.status[expected_hash]["loaded"]:
-            self.logger.debug("Font %s already active.", expected_hash)
+            logger.debug("Font %s already active.", expected_hash)
             self.status[expected_hash]["message"] = "Already loaded"
             return True
 
         # 3. Validation
         if not font_path.is_absolute():
             msg = f"Path must be absolute: {font_path}"
-            self.logger.error(msg)
+            logger.error(msg)
             self.status[expected_hash]["message"] = msg
             return False
 
         if not font_path.exists():
             msg = f"File not found: {font_path}"
-            self.logger.error(msg)
+            logger.error(msg)
             self.status[expected_hash]["message"] = msg
             return False
 
         # 4. Integrity Check
-        self.logger.debug("Verifying integrity of %s...", font_path.name)
+        logger.debug("Verifying integrity of %s...", font_path.name)
         actual_hash = self._calculate_file_md5(font_path)
 
         if not actual_hash:
@@ -482,7 +480,7 @@ class SessionFontManager:
 
         if actual_hash != expected_hash:
             msg = f"Hash Mismatch. Expected: {expected_hash}, Found: {actual_hash}"
-            self.logger.error(msg)
+            logger.error(msg)
             self.status[expected_hash]["message"] = msg
             return False
 
@@ -498,7 +496,7 @@ class SessionFontManager:
             success, sys_path = self._load_unix(font_path)
         else:
             msg = f"Unsupported OS: {self.current_os}"
-            self.logger.error(msg)
+            logger.error(msg)
             self.status[expected_hash]["message"] = msg
             return False
 
@@ -520,11 +518,11 @@ class SessionFontManager:
 
             result = add_font_resource_w(str(font_path))
             if result > 0:
-                self.logger.info("Windows: Loaded font %s", font_path.name)
+                logger.info("Windows: Loaded font %s", font_path.name)
                 return True
             return False
         except Exception as e:
-            self.logger.error("Windows loading error: %s", e)
+            logger.error("Windows loading error: %s", e)
             return False
 
     def _load_unix(self, font_path: Path) -> tuple[bool, Optional[Path]]:
@@ -535,17 +533,17 @@ class SessionFontManager:
         try:
             dest_dir.mkdir(parents=True, exist_ok=True)
             if dest_path.exists():
-                self.logger.debug("Unix: Font exists, skipping copy.")
+                logger.debug("Unix: Font exists, skipping copy.")
                 return True, dest_path
 
             shutil.copy(font_path, dest_path)
             if self.current_os == "Linux":
                 subprocess.run(["fc-cache", "-f"], check=True, capture_output=True)
 
-            self.logger.info("Unix: Installed font to %s", dest_path)
+            logger.info("Unix: Installed font to %s", dest_path)
             return True, dest_path
         except Exception as e:
-            self.logger.error("Unix loading error: %s", e)
+            logger.error("Unix loading error: %s", e)
             return False, None
 
     def unload_font(self, file_hash: str) -> bool:
@@ -571,11 +569,11 @@ class SessionFontManager:
             success = self._unload_unix(path_to_remove)
 
         if success:
-            self.logger.info("Unloaded font: %s", path_to_remove.name)
+            logger.info("Unloaded font: %s", path_to_remove.name)
             self.status[file_hash]["loaded"] = False
             self.status[file_hash]["message"] = "Unloaded"
         else:
-            self.logger.error("Failed to unload font: %s", path_to_remove.name)
+            logger.error("Failed to unload font: %s", path_to_remove.name)
             self.status[file_hash]["message"] = "Unload Failed"
 
         return success
@@ -595,17 +593,17 @@ class SessionFontManager:
                     subprocess.run(["fc-cache", "-f"], check=True, capture_output=True)
             return True
         except Exception as e:
-            self.logger.error("Error removing font %s: %s", path, e)
+            logger.error("Error removing font %s: %s", path, e)
             return False
 
     def cleanup(self):
         """Iterates through status and unloads all loaded fonts."""
-        self.logger.debug("Starting cleanup...")
+        logger.debug("Starting cleanup...")
         hashes = list(self.status.keys())
         for h in hashes:
             if self.status[h]["loaded"]:
                 self.unload_font(h)
-        self.logger.debug("Cleanup complete.")
+        logger.debug("Cleanup complete.")
 
     def __enter__(self):
         return self
@@ -615,11 +613,10 @@ class SessionFontManager:
 
 
 def extract_ass_fonts(path: Path):
-    """
-    Accepts a filepath to a single .ass file or a dirpath containing .ass files.
+    """Accepts a filepath to a single .ass file or a dirpath containing .ass files.
+
     Returns a list of unique font names found in the [V4+ Styles] / [V4 Styles] sections.
     """
-
     fonts = set()
     p = Path(path)
 
@@ -722,7 +719,7 @@ def scan_fonts_in_directory(db: FontDatabase, dir_path: Path):
     batch_names = {"full": [], "family": [], "ps": [], "unique": []}
 
     # 3. Process
-    with Pool(processes=min(8, cpu_count())) as pool:
+    with Pool(processes=min(16, cpu_count())) as pool:
         args_iter = [(p, dir_path) for p in font_files]
 
         for result in pool.imap_unordered(
@@ -758,7 +755,7 @@ def scan_fonts_in_directory(db: FontDatabase, dir_path: Path):
                 # Reset buffers
                 batch_files = []
                 batch_names = {"full": [], "family": [], "ps": [], "unique": []}
-                logging.info(
+                logger.info(
                     "Processed %d / %d files...",
                     final_stats["files_processed"],
                     len(font_files),
@@ -846,7 +843,7 @@ class FontLoaderApp:
                 else:
                     self.font_path = Path.cwd()
 
-        self.logger = logging.getLogger(__name__)
+        logger = logging.getLogger(__name__)
 
         # --- Dynamic Data (The Numbers) ---
         self.stats = {
@@ -872,7 +869,6 @@ class FontLoaderApp:
                 "status_2": "索引中有 {index_fonts} 个字体，{index_names} 种名称；当前共 {subtitles} 个字幕。",
                 "btn_menu": "菜单",
                 "btn_details": "详情",
-                "btn_ok": "确定",
                 "btn_close": "关闭",
                 "btn_change": "更改...",  # Added
                 "menu_update": "更新索引",
@@ -893,7 +889,6 @@ class FontLoaderApp:
                 "status_2": "索引中有 {index_fonts} 個字型，{index_names} 種名稱；當前共 {subtitles} 個字幕。",
                 "btn_menu": "菜單",
                 "btn_details": "詳情",
-                "btn_ok": "確定",
                 "btn_close": "關閉",
                 "btn_change": "更改...",  # Added
                 "menu_update": "更新索引",
@@ -914,7 +909,6 @@ class FontLoaderApp:
                 "status_2": "Index: {index_fonts} fonts, {index_names} names; {subtitles} subtitles.",
                 "btn_menu": "Menu",
                 "btn_details": "Details",
-                "btn_ok": "OK",
                 "btn_close": "Close",
                 "btn_change": "Change...",  # Added
                 "menu_update": "Update Index",
@@ -960,6 +954,13 @@ class FontLoaderApp:
         self.lbl_status2 = ttk.Label(main_frame, text="")
         self.lbl_status2.pack(anchor="w", pady=(0, 10))
 
+        self.progress_var = tk.DoubleVar()
+        self.progress_bar = ttk.Progressbar(
+            main_frame, variable=self.progress_var, maximum=100, mode="determinate"
+        )
+        # Hide it initially
+        self.lbl_progress_task = ttk.Label(main_frame, text="", font=("", 8))
+
         # 3. Details Frame (Hidden by default)
         self.frame_details = ttk.Frame(main_frame)
         self.txt_details = tk.Text(
@@ -976,7 +977,6 @@ class FontLoaderApp:
 
         self.txt_details.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scroll_details.pack(side=tk.RIGHT, fill=tk.Y)
-        # Note: frame_details is packed in toggle_details()
 
         # 4. Buttons
         btn_frame = ttk.Frame(main_frame)
@@ -990,9 +990,6 @@ class FontLoaderApp:
 
         self.btn_close = ttk.Button(btn_frame, command=self.action_close)
         self.btn_close.pack(side=tk.RIGHT, padx=(5, 0))
-
-        self.btn_ok = ttk.Button(btn_frame, command=self.action_ok)
-        self.btn_ok.pack(side=tk.RIGHT)
 
         # 5. Footer
         footer_frame = ttk.Frame(self.root)
@@ -1036,7 +1033,6 @@ class FontLoaderApp:
 
         self.btn_menu.config(text=txt["btn_menu"])
         self.btn_details.config(text=txt["btn_details"])
-        self.btn_ok.config(text=txt["btn_ok"])
         self.btn_close.config(text=txt["btn_close"])
         self.lbl_footer.config(text=txt["footer"])
 
@@ -1080,7 +1076,7 @@ class FontLoaderApp:
         self.refresh_ui()
 
     def updata_stats(self):
-        """Fetches latest stats from the database"""
+        """Fetches latest stats from the database."""
         self.stats["index_fonts"] = int(self.db.metadata_get("file_count") or 0)
         self.stats["index_names"] = sum(
             int(self.db.metadata_get(key) or 0)
@@ -1093,17 +1089,39 @@ class FontLoaderApp:
         )
 
     def action_update_index(self):
-        """Simulates scanning/loading fonts by changing numbers."""
-        base_path = self.font_path
-        scan_fonts_in_directory(self.db, Path(base_path))
+            """Run the font directory scan in a background thread."""
+            self.btn_menu.configure(state="disabled")
+            self.progress_bar.pack(fill=tk.X, pady=(0, 5))
+            self.progress_bar.configure(mode="indeterminate")
+            self.progress_bar.start(10)
+            
+            txt = self.locales[self.current_lang]
+            self.lbl_progress_task.config(text=txt["menu_update"] + "...")
+            self.lbl_progress_task.pack(anchor="w")
+
+            def run_scan():
+                try:
+                    scan_fonts_in_directory(self.db, Path(self.font_path))
+                    self.root.after(0, self._on_index_complete)
+                except Exception as e:
+                    logger.error(f"Scan failed: {e}")
+                    self.root.after(0, lambda: messagebox.showerror("Error", str(e)))
+
+            threading.Thread(target=run_scan, daemon=True).start()
+
+    def _on_index_complete(self):
+        """Handle UI cleanup after index update."""
+        self.progress_bar.stop()
+        self.progress_bar.pack_forget()
+        self.lbl_progress_task.pack_forget()
+        self.btn_menu.configure(state="normal")
         self.refresh_ui()
-        messagebox.showinfo(
-            self.locales[self.current_lang]["menu_update"],
-            self.locales[self.current_lang]["msg_update_complete"],
-        )
+        
+        txt = self.locales[self.current_lang]
+        messagebox.showinfo(txt["menu_update"], txt["msg_update_complete"])
     def action_set_font_base(self):
         txt = self.locales[self.current_lang]
-        self.logger.debug("Action: Set Font Base clicked")
+        logger.debug("Action: Set Font Base")
 
         # Create Modal Toplevel Window
         top = tk.Toplevel(self.root)
@@ -1132,7 +1150,7 @@ class FontLoaderApp:
                 self.font_path = Path(new_path)
                 self.db.metadata_set("font_base_path", str(self.font_path))
                 path_var.set(str(self.font_path))
-                self.logger.info(f"Font base changed to: {self.font_path}")
+                logger.info(f"Font base changed to: {self.font_path}")
                 top.lift() # Bring focus back to dialog
 
         # Button Row
@@ -1149,7 +1167,7 @@ class FontLoaderApp:
 
     def action_export(self):
         txt = self.locales[self.current_lang]
-        self.logger.debug(f"Action: {txt['msg_export']}")
+        logger.debug("Action: Export Fonts")
 
         # Ask for export directory
         export_dir = filedialog.askdirectory(
@@ -1168,27 +1186,22 @@ class FontLoaderApp:
                     try:
                         shutil.copy(src_path, dest_path)
                     except Exception as e:
-                        self.logger.error(
-                            "Failed to export font %s: %s", src_path.name, e
-                        )
+                        logger.error("Failed to export font %s: %s", src_path.name, e)
 
         messagebox.showinfo(txt["menu_export"], txt["msg_export"])
 
     def action_help(self):
         txt = self.locales[self.current_lang]
-        self.logger.debug("Action: Help opened")
+        logger.debug("Action: Help opened")
         messagebox.showinfo(txt["menu_help"], txt["msg_help"])
 
-    def action_ok(self):
-        self.action_close()
-
     def action_close(self):
-        self.logger.debug("Action: Close clicked")
+        logger.debug("Action: Close clicked")
         self.font_manager.cleanup()
         self.root.destroy()
     def _parse_drop_files(self, data):
-        """
-        Parses the string returned by tkinterdnd2.
+        """Parses the string returned by tkinterdnd2.
+
         Handles paths with spaces (wrapped in {}) and multiple files.
         Returns a list of paths.
         """
@@ -1211,73 +1224,82 @@ class FontLoaderApp:
 
         # Take the first dropped file/folder
         new_path = dropped_files[0]
-        self.logger.info(f"File dropped: {new_path}")
+        logger.info(f"File dropped: {new_path}")
 
         # Update sub_path and reload
         self.sub_path = new_path
         self.load_fonts()
 
     def load_fonts(self):
-        """Checks if the application was launched by dropping a file onto it."""
-        file_path = self.sub_path
+            """Begin the font loading process asynchronously."""
+            file_path = self.sub_path
+            sub_count, font_list = extract_ass_fonts(file_path)
+            
+            if not font_list:
+                self.refresh_ui()
+                return
 
-        sub_count, font_list = extract_ass_fonts(file_path)
-        self.logger.debug(f"Loading font: {font_list}")
+            self.txt_details.config(state="normal")
+            self.progress_bar.pack(fill=tk.X, pady=(0, 5))
+            self.progress_bar.configure(mode="determinate")
+            self.progress_var.set(0)
+            
+            # Start incremental processing
+            self._process_font_queue(font_list, 0, sub_count, [])
 
-        # Prepare text output
-        self.txt_details.config(state="normal")
-        # Don't clear, just append
-        # self.txt_details.delete("1.0", tk.END)
+    def _process_font_queue(self, font_list: list[str], index: int, sub_count: int, log_lines: list[str]):
+        """Process one font at a time using root.after to keep GUI alive."""
+        if index >= len(font_list):
+            # Finalize
+            self._finalize_load(log_lines, sub_count)
+            return
 
-        load_status = {"loaded": [], "errors": [], "not_match": []}
-        log_lines = []
+        font = font_list[index]
+        self.lbl_progress_task.config(text=f"Loading: {font}")
+        self.lbl_progress_task.pack(anchor="w")
+        
+        # Update progress bar
+        progress = (index / len(font_list)) * 100
+        self.progress_var.set(progress)
 
-        for font in font_list:
-            res = self.db.search_by_font(font)
-            log_line = ""
-
-            if res:
-                # DB Returns: [(path, hash), ...]
-                # res[0][0] is the path relative to the scan root (stored in DB)
-                relative_path_str = res[0][0]
-                font_path = (Path(self.font_path) / Path(relative_path_str)).absolute()
-                font_hash = res[0][1]
-
-                success = self.font_manager.load_font(font_path, font_hash)
-
-                if success:
-                    load_status["loaded"].append(font)
-                    log_line = f"[ok] {font} > {relative_path_str}\n"
-                else:
-                    load_status["errors"].append(font)
-                    # Retrieve detailed error from session manager
-                    msg = self.font_manager.status.get(font_hash, {}).get(
-                        "message", "Unknown Error"
-                    )
-                    log_line = f"[xx] {font} > {relative_path_str} Error: {msg}\n"
+        # Logic for matching and loading
+        res = self.db.search_by_font(font)
+        log_line = ""
+        if res:
+            relative_path_str = res[0][0]
+            font_path = (Path(self.font_path) / Path(relative_path_str)).absolute()
+            font_hash = res[0][1]
+            success = self.font_manager.load_font(font_path, font_hash)
+            
+            if success:
+                self.stats["loaded"] += 1
+                log_line = f"[ok] {font} > {relative_path_str}\n"
             else:
-                load_status["not_match"].append(font)
-                log_line = f"[??] {font}\n"
+                self.stats["errors"] += 1
+                msg = self.font_manager.status.get(font_hash, {}).get("message", "Error")
+                log_line = f"[xx] {font} > {relative_path_str} ({msg})\n"
+        else:
+            self.stats["no_match"] += 1
+            log_line = f"[??] {font}\n"
 
-            log_lines.append(log_line)
+        log_lines.append(log_line)
+        
+        # Schedule next font in 10ms (allows UI to breathe)
+        self.root.after(10, self._process_font_queue, font_list, index + 1, sub_count, log_lines)
 
-        # Sort log lines: [ok] first, then [xx], then [??]
-        log_lines.sort(
-            key=lambda x: (
-                0 if x.startswith("[ok]") else 1 if x.startswith("[xx]") else 2
-            )
-        )
-
+    def _finalize_load(self, log_lines: list[str], sub_count: int):
+        """Update logs and UI after all fonts are processed."""
+        log_lines.sort(key=lambda x: (0 if x.startswith("[ok]") else 1 if x.startswith("[xx]") else 2))
+        
         for line in log_lines:
             self.txt_details.insert(tk.END, line)
-
+        
+        self.txt_details.see(tk.END)
         self.txt_details.config(state="disabled")
-
-        # Append to stats instead of replacing
+        
         self.stats["subtitles"] += sub_count
-        self.stats["loaded"] += len(load_status["loaded"])
-        self.stats["errors"] += len(load_status["errors"])
-        self.stats["no_match"] += len(load_status["not_match"])
+        self.progress_bar.pack_forget()
+        self.lbl_progress_task.pack_forget()
         self.refresh_ui()
 
 
