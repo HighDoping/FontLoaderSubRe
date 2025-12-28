@@ -1,5 +1,6 @@
 import ctypes
 import hashlib
+import json
 import logging
 import platform
 import re
@@ -7,15 +8,16 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import threading
 import tkinter as tk
 import webbrowser
 from multiprocessing import Pool, cpu_count, freeze_support
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Any, ClassVar, Optional
-import threading
 
 from fontTools.ttLib import TTCollection, TTFont, TTLibFileIsCollectionError
+from platformdirs import user_config_dir
 from tkinterdnd2 import DND_FILES, TkinterDnD
 
 logger = logging.getLogger(__name__)
@@ -206,10 +208,6 @@ class FontDatabase:
     """Manages the SQLite database for font metadata storage and retrieval."""
 
     def __init__(self, db_name="FontLoaderSubRe.db"):
-        if platform.system() in ["Darwin", "Linux"]:
-            db_path = Path.home() / ".fontloadersubre"
-            db_path.mkdir(parents=True, exist_ok=True)
-            db_name = str(db_path / db_name)
         self.db_name = db_name
         self._init_db()
 
@@ -625,7 +623,11 @@ def extract_ass_fonts(path: Path):
     if p.is_file():
         files = [p]
     elif p.is_dir():
-        files = [f for f in p.rglob("*.ass") if f.is_file()]
+        files = [
+            f
+            for f in p.rglob("*")
+            if f.is_file() and f.suffix.lower() in {".ass", ".ssa"}
+        ]
     else:
         raise FileNotFoundError(f"Path not found: {path}")
 
@@ -786,11 +788,10 @@ def scan_fonts_in_directory(db: FontDatabase, dir_path: Path):
 
 
 class FontLoaderApp:
-    def __init__(
-        self, root, sub_path: Optional[Path] = None, font_path: Optional[Path] = None
-    ):
+
+    def __init__(self, root, sub_path: Optional[Path] = None):
         self.root = root
-        self.root.title("FontLoaderSubRe 0.1.0")
+        self.root.title("FontLoaderSubRe 0.1.1")
         self.root.resizable(True, True)
         self.root.minsize(350, 160)
 
@@ -825,25 +826,17 @@ class FontLoaderApp:
 
         self.project_link = "https://github.com/HighDoping/FontLoaderSubRe"
 
-        self.sub_path = sub_path
-        self.db = FontDatabase()
+        self.app_config = AppConfig()
+        self.db = FontDatabase(self.app_config.get_db_path())
         self.font_manager = SessionFontManager()
-        db_font_path=self.db.metadata_get("font_base_path")
-        if font_path is not None:
-            if db_font_path is None:
-                self.font_path = font_path
-            else:
-                self.font_path = Path(db_font_path)
-        else:
-            if db_font_path is not None:
-                self.font_path = Path(db_font_path)
-            else:
-                if platform.system() in ["Darwin", "Linux"]:
-                    self.font_path = Path.home()
-                else:
-                    self.font_path = Path.cwd()
 
-        logger = logging.getLogger(__name__)
+        self.sub_path = sub_path
+        self.font_path = self.app_config.get_font_base_path()
+
+        logger.debug("FontLoaderApp initialized.")
+        logger.debug(f"Font base path: {self.font_path}")
+        logger.debug(f"Subtitle path: {self.sub_path}")
+        logger.debug(f"Database path: {self.db.db_name}")
 
         # --- Dynamic Data (The Numbers) ---
         self.stats = {
@@ -857,9 +850,6 @@ class FontLoaderApp:
 
         # --- State ---
         self.details_visible = False  # New state for foldable details
-        if self.db.metadata_get("ui_language") is None:
-            self.db.metadata_set("ui_language", "en_us")
-        self.current_lang = self.db.metadata_get("ui_language")  # Default
 
         # --- Localization Data ---
         self.locales = {
@@ -1020,7 +1010,7 @@ class FontLoaderApp:
 
     def refresh_ui(self):
         """Updates all labels based on current stats and language"""
-        txt = self.locales[self.current_lang]
+        txt = self.locales[self.app_config.get_language()]
 
         self.lbl_header.config(text=txt["header"])
 
@@ -1039,7 +1029,7 @@ class FontLoaderApp:
     def create_popup_menu(self):
         """Recreates the popup menu to ensure language is correct"""
         self.popup_menu = tk.Menu(self.root, tearoff=0)
-        txt = self.locales[self.current_lang]
+        txt = self.locales[self.app_config.get_language()]
 
         # Actions
         self.popup_menu.add_command(
@@ -1071,8 +1061,7 @@ class FontLoaderApp:
         self.popup_menu.post(x, y)
 
     def set_lang(self, lang_code):
-        self.current_lang = lang_code
-        self.db.metadata_set("ui_language", lang_code)
+        self.app_config.set_language(lang_code)
         self.refresh_ui()
 
     def updata_stats(self):
@@ -1089,25 +1078,25 @@ class FontLoaderApp:
         )
 
     def action_update_index(self):
-            """Run the font directory scan in a background thread."""
-            self.btn_menu.configure(state="disabled")
-            self.progress_bar.pack(fill=tk.X, pady=(0, 5))
-            self.progress_bar.configure(mode="indeterminate")
-            self.progress_bar.start(10)
-            
-            txt = self.locales[self.current_lang]
-            self.lbl_progress_task.config(text=txt["menu_update"] + "...")
-            self.lbl_progress_task.pack(anchor="w")
+        """Run the font directory scan in a background thread."""
+        self.btn_menu.configure(state="disabled")
+        self.progress_bar.pack(fill=tk.X, pady=(0, 5))
+        self.progress_bar.configure(mode="indeterminate")
+        self.progress_bar.start(10)
 
-            def run_scan():
-                try:
-                    scan_fonts_in_directory(self.db, Path(self.font_path))
-                    self.root.after(0, self._on_index_complete)
-                except Exception as e:
-                    logger.error(f"Scan failed: {e}")
-                    self.root.after(0, lambda: messagebox.showerror("Error", str(e)))
+        txt = self.locales[self.app_config.get_language()]
+        self.lbl_progress_task.config(text=txt["menu_update"] + "...")
+        self.lbl_progress_task.pack(anchor="w")
 
-            threading.Thread(target=run_scan, daemon=True).start()
+        def run_scan():
+            try:
+                scan_fonts_in_directory(self.db, Path(self.font_path))
+                self.root.after(0, self._on_index_complete)
+            except Exception as e:
+                logger.error(f"Scan failed: {e}")
+                self.root.after(0, lambda: messagebox.showerror("Error", str(e)))
+
+        threading.Thread(target=run_scan, daemon=True).start()
 
     def _on_index_complete(self):
         """Handle UI cleanup after index update."""
@@ -1116,11 +1105,11 @@ class FontLoaderApp:
         self.lbl_progress_task.pack_forget()
         self.btn_menu.configure(state="normal")
         self.refresh_ui()
-        
-        txt = self.locales[self.current_lang]
+
+        txt = self.locales[self.app_config.get_language()]
         messagebox.showinfo(txt["menu_update"], txt["msg_update_complete"])
     def action_set_font_base(self):
-        txt = self.locales[self.current_lang]
+        txt = self.locales[self.app_config.get_language()]
         logger.debug("Action: Set Font Base")
 
         # Create Modal Toplevel Window
@@ -1147,8 +1136,8 @@ class FontLoaderApp:
         def do_change():
             new_path = filedialog.askdirectory(initialdir=self.font_path, parent=top)
             if new_path:
+                self.app_config.set_font_base_path(Path(new_path))
                 self.font_path = Path(new_path)
-                self.db.metadata_set("font_base_path", str(self.font_path))
                 path_var.set(str(self.font_path))
                 logger.info(f"Font base changed to: {self.font_path}")
                 top.lift() # Bring focus back to dialog
@@ -1165,8 +1154,11 @@ class FontLoaderApp:
         top.grab_set()
         self.root.wait_window(top)
 
+        self.db = FontDatabase(self.app_config.get_db_path())
+        self.refresh_ui()
+
     def action_export(self):
-        txt = self.locales[self.current_lang]
+        txt = self.locales[self.app_config.get_language()]
         logger.debug("Action: Export Fonts")
 
         # Ask for export directory
@@ -1191,7 +1183,7 @@ class FontLoaderApp:
         messagebox.showinfo(txt["menu_export"], txt["msg_export"])
 
     def action_help(self):
-        txt = self.locales[self.current_lang]
+        txt = self.locales[self.app_config.get_language()]
         logger.debug("Action: Help opened")
         messagebox.showinfo(txt["menu_help"], txt["msg_help"])
 
@@ -1231,21 +1223,21 @@ class FontLoaderApp:
         self.load_fonts()
 
     def load_fonts(self):
-            """Begin the font loading process asynchronously."""
-            file_path = self.sub_path
-            sub_count, font_list = extract_ass_fonts(file_path)
-            
-            if not font_list:
-                self.refresh_ui()
-                return
+        """Begin the font loading process asynchronously."""
+        file_path = self.sub_path
+        sub_count, font_list = extract_ass_fonts(file_path)
 
-            self.txt_details.config(state="normal")
-            self.progress_bar.pack(fill=tk.X, pady=(0, 5))
-            self.progress_bar.configure(mode="determinate")
-            self.progress_var.set(0)
-            
-            # Start incremental processing
-            self._process_font_queue(font_list, 0, sub_count, [])
+        if not font_list:
+            self.refresh_ui()
+            return
+
+        self.txt_details.config(state="normal")
+        self.progress_bar.pack(fill=tk.X, pady=(0, 5))
+        self.progress_bar.configure(mode="determinate")
+        self.progress_var.set(0)
+
+        # Start incremental processing
+        self._process_font_queue(font_list, 0, sub_count, [])
 
     def _process_font_queue(self, font_list: list[str], index: int, sub_count: int, log_lines: list[str]):
         """Process one font at a time using root.after to keep GUI alive."""
@@ -1257,7 +1249,7 @@ class FontLoaderApp:
         font = font_list[index]
         self.lbl_progress_task.config(text=f"Loading: {font}")
         self.lbl_progress_task.pack(anchor="w")
-        
+
         # Update progress bar
         progress = (index / len(font_list)) * 100
         self.progress_var.set(progress)
@@ -1270,7 +1262,7 @@ class FontLoaderApp:
             font_path = (Path(self.font_path) / Path(relative_path_str)).absolute()
             font_hash = res[0][1]
             success = self.font_manager.load_font(font_path, font_hash)
-            
+
             if success:
                 self.stats["loaded"] += 1
                 log_line = f"[ok] {font} > {relative_path_str}\n"
@@ -1283,24 +1275,93 @@ class FontLoaderApp:
             log_line = f"[??] {font}\n"
 
         log_lines.append(log_line)
-        
+
         # Schedule next font in 10ms (allows UI to breathe)
         self.root.after(10, self._process_font_queue, font_list, index + 1, sub_count, log_lines)
 
     def _finalize_load(self, log_lines: list[str], sub_count: int):
         """Update logs and UI after all fonts are processed."""
         log_lines.sort(key=lambda x: (0 if x.startswith("[ok]") else 1 if x.startswith("[xx]") else 2))
-        
+
         for line in log_lines:
             self.txt_details.insert(tk.END, line)
-        
+
         self.txt_details.see(tk.END)
         self.txt_details.config(state="disabled")
-        
+
         self.stats["subtitles"] += sub_count
         self.progress_bar.pack_forget()
         self.lbl_progress_task.pack_forget()
         self.refresh_ui()
+
+
+class AppConfig:
+    """Unified interface for application configuration management."""
+
+    APP_NAME = "FontLoaderSubRe"
+    APP_AUTHOR = "HighDoping"
+
+    DB_NAME = "FontLoaderSubRe.db"
+
+    def __init__(self):
+
+        self.config_dir = Path(user_config_dir(self.APP_NAME, self.APP_AUTHOR))
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        self.config_file = self.config_dir / "settings.json"
+        self._settings = self._load_settings()
+
+    def _load_settings(self) -> dict:
+        """Load settings from file or create defaults."""
+        if self.config_file.exists():
+            try:
+                with self.config_file.open("r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                logger.warning("Failed to load settings, using defaults")
+
+        return {
+            "font_base_path": str(Path.cwd()),
+            "ui_language": "en_us",
+        }
+
+    def _save_settings(self):
+        """Persist settings to disk."""
+        try:
+            with self.config_file.open("w", encoding="utf-8") as f:
+                json.dump(self._settings, f, indent=4)
+        except Exception as e:
+            logger.error(f"Failed to save settings: {e}")
+
+    def get(self, key: str, default=None):
+        """Get a configuration value."""
+        return self._settings.get(key, default)
+
+    def set(self, key: str, value):
+        """Set a configuration value and save."""
+        self._settings[key] = value
+        self._save_settings()
+
+    def get_font_base_path(self) -> Path:
+        """Get the font base directory."""
+        if platform.system() == "Windows" and Path(self.DB_NAME).exists():
+            return Path.cwd()
+        return Path(self._settings.get("font_base_path", Path.cwd()))
+
+    def set_font_base_path(self, path: Path):
+        """Set the font base directory."""
+        self.set("font_base_path", str(path))
+
+    def get_db_path(self) -> Path:
+        """Get the database file path."""
+        return self.get_font_base_path() / self.DB_NAME
+
+    def get_language(self) -> str:
+        """Get the UI language."""
+        return self._settings.get("ui_language", "en_us")
+
+    def set_language(self, lang_code: str):
+        """Set the UI language."""
+        self.set("ui_language", lang_code)
 
 
 if __name__ == "__main__":
@@ -1326,17 +1387,8 @@ if __name__ == "__main__":
     else:
         style.theme_use(available_themes[0])
 
-    if platform.system() == "Windows":
-
-        sub_path_arg = sys.argv[1] if len(sys.argv) > 1 else None
-        sub_path = Path(sub_path_arg) if sub_path_arg else None
-        font_path = Path.cwd()
-
-        app = FontLoaderApp(root, sub_path=sub_path, font_path=font_path)
-    elif platform.system() in ["Darwin", "Linux"]:
-
-        sub_path_arg = sys.argv[1] if len(sys.argv) > 1 else None
-        sub_path = Path(sub_path_arg) if sub_path_arg else None
-        app = FontLoaderApp(root, sub_path=sub_path)
+    sub_path_arg = sys.argv[1] if len(sys.argv) > 1 else None
+    sub_path = Path(sub_path_arg) if sub_path_arg else None
+    app = FontLoaderApp(root, sub_path=sub_path)
 
     root.mainloop()
