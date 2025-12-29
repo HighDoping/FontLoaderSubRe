@@ -796,20 +796,22 @@ class FontLoaderApp:
         self.root.minsize(350, 160)
 
         try:
+            res_dir = Path(__file__).parent / "resources"
+            icon_ico = res_dir / "icon.ico"
+            icon_png = res_dir / "icon.png"
+
             if platform.system() == "Darwin":
-                if "__compiled__" in globals():
-                    pass
-                else:
-                    self.root.iconphoto(
-                        True,
-                        tk.PhotoImage(
-                            file=Path(__file__).parent / "resources" / "icon.png"
-                        ),
-                    )
-            else:
-                self.root.iconbitmap(Path(__file__).parent / "resources" / "icon.ico")
+                if "__compiled__" not in globals() and icon_png.exists():
+                    self._icon_img = tk.PhotoImage(file=icon_png)
+                    self.root.iconphoto(True, self._icon_img)
+            elif platform.system() == "Windows":
+                if icon_ico.exists():
+                    self.root.iconbitmap(icon_ico)
+            elif platform.system() == "Linux" and icon_png.exists():
+                self._icon_img = tk.PhotoImage(file=icon_png)
+                self.root.iconphoto(True, self._icon_img)
         except Exception:
-            logging.debug("Failed to load window icon.",exc_info=True)
+            logger.debug("Failed to load window icon.", exc_info=True)
 
         self.root.drop_target_register(DND_FILES)
         self.root.dnd_bind("<<Drop>>", self.on_drop)
