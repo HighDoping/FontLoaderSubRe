@@ -227,13 +227,14 @@ class FontDatabase:
     """Manages the SQLite database for font metadata storage and retrieval."""
 
     def __init__(self, db_name="FontLoaderSubRe.db"):
-        self.db_name = db_name
+        self.db_name = Path(db_name)
+        logger.debug(f"Init db from {str(self.db_name)}")
         self._init_db()
 
     def _get_conn(self):
         conn = sqlite3.connect(self.db_name)
         # PERFORMANCE PRAGMAS
-        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA journal_mode = DELETE")
         conn.execute("PRAGMA synchronous = NORMAL")
         conn.execute("PRAGMA foreign_keys = ON")
         return conn
@@ -821,6 +822,31 @@ def scan_fonts_in_directory(db: FontDatabase, dir_path: Path, progress_callback=
     return final_stats
 
 
+class ExtractWorker(QThread):
+    """Background thread for extracting font names from subtitle files."""
+
+    progress = Signal(int, int)  # current, total
+    finished = Signal(int, list)  # total_subs, all_fonts
+
+    def __init__(self, file_list):
+        super().__init__()
+        self.file_list = file_list
+
+    def run(self):
+        all_fonts = set()
+        total_subs = 0
+        total_files = len(self.file_list)
+
+        for i, file_path in enumerate(self.file_list):
+            if file_path.suffix.lower() in {".ass", ".ssa"}:
+                sub_count, font_list = extract_ass_fonts(file_path)
+                all_fonts.update(font_list)
+                total_subs += sub_count
+            self.progress.emit(i + 1, total_files)
+
+        self.finished.emit(total_subs, list(all_fonts))
+
+
 class ScanWorker(QThread):
     """Background thread for scanning fonts."""
 
@@ -926,7 +952,8 @@ class SettingsDialog(QDialog):
 
 
 class FontLoaderApp(QMainWindow):
-    def __init__(self, sub_path: Optional[Path] = None):
+
+    def __init__(self, sub_paths: Optional[list[Path]] = None):
         super().__init__()
         self.setWindowTitle("FontLoaderSubRe 0.1.1")
 
@@ -935,9 +962,19 @@ class FontLoaderApp(QMainWindow):
 
         # Configuration & Managers
         self.app_config = AppConfig()
-        self.db = FontDatabase(self.app_config.get_db_path())
+        try:
+            self.db = FontDatabase(self.app_config.get_db_path())
+        except Exception as e:
+            logger.error("Database error: %s", e)
+            QMessageBox.critical(
+                self,
+                "Database Error",
+                f"Failed to open database:\n{e}\n Default to current folder.",
+            )
+            self.app_config.set_font_base_path(Path.cwd())
+            self.db = FontDatabase(self.app_config.get_db_path())
+
         self.font_manager = SessionFontManager()
-        self.font_path = self.app_config.get_font_base_path()
         self.project_link = "https://github.com/HighDoping/FontLoaderSubRe"
 
         # Localization
@@ -956,11 +993,14 @@ class FontLoaderApp(QMainWindow):
                 "menu_export": "Export Fonts",
                 "menu_help": "Help",
                 "menu_lang": "Language",
+                "menu_clear": "Clear Settings",
                 "title_font_base": "Font Base Settings",
                 "lbl_current_path": "Current Base Path:",
                 "msg_export": "Export complete.",
                 "msg_help": "Drag SSA/ASS files or folder here. Use 'Update Index' if fonts change.",
                 "msg_update_complete": "Index update complete.",
+                "msg_extracting_subs": "Extracting font names from subtitles...",
+                "msg_clear": "Settings cleared",
                 "footer": f"GPLv2: {self.project_link}",
                 "error": "Error",
             },
@@ -977,12 +1017,15 @@ class FontLoaderApp(QMainWindow):
                 "select_font_base": "設定字型庫資料夾",
                 "menu_export": "匯出字型",
                 "menu_help": "說明",
+                "menu_clear": "清除設定",
                 "menu_lang": "語言",
                 "title_font_base": "字型庫路徑設定",
                 "lbl_current_path": "目前字型庫路徑:",
                 "msg_export": "匯出完成。",
                 "msg_help": "將字幕拖入視窗。若字型庫變更請點擊「更新索引」。",
                 "msg_update_complete": "索引更新完成。",
+                "msg_extracting_subs": "從字幕中獲取字型名稱...",
+                "msg_clear": "設定已清除",
                 "footer": f"GPLv2: {self.project_link}",
                 "error": "錯誤",
             },
@@ -999,12 +1042,15 @@ class FontLoaderApp(QMainWindow):
                 "select_font_base": "设置字体库文件夹",
                 "menu_export": "导出字体",
                 "menu_help": "帮助",
+                "menu_clear": "清除设置",
                 "menu_lang": "语言",
                 "title_font_base": "字体库路径设置",
                 "lbl_current_path": "当前字体库路径:",
                 "msg_export": "导出完成。",
                 "msg_help": "将字幕拖入窗口。若字体库变更请点击'更新索引'。",
                 "msg_update_complete": "索引更新完成。",
+                "msg_extracting_subs": "从字幕中获取字体名称...",
+                "msg_clear": "设置已清除",
                 "footer": f"GPLv2: {self.project_link}",
                 "error": "错误",
             },
@@ -1021,8 +1067,8 @@ class FontLoaderApp(QMainWindow):
         self.init_ui()
         self.refresh_ui()
 
-        if sub_path:
-            QTimer.singleShot(100, lambda: self.process_dropped_path(sub_path))
+        if sub_paths:
+            QTimer.singleShot(100, lambda: self.process_dropped_files(sub_paths))
 
     def init_ui(self):
         central = QWidget()
@@ -1136,7 +1182,9 @@ class FontLoaderApp(QMainWindow):
         )
 
         menu.addSeparator()
+
         menu.addAction(txt["menu_help"]).triggered.connect(self.action_help)
+        menu.addAction(txt["menu_clear"]).triggered.connect(self.action_clear)
 
         menu.exec(QCursor.pos())
 
@@ -1152,7 +1200,7 @@ class FontLoaderApp(QMainWindow):
         self.progress_bar.show()
         self.lbl_progress_task.show()
 
-        self.scan_thread = ScanWorker(self.db, self.font_path)
+        self.scan_thread = ScanWorker(self.db, self.app_config.get_font_base_path())
 
         self.scan_thread.progress.connect(self._on_scan_progress)
 
@@ -1184,17 +1232,32 @@ class FontLoaderApp(QMainWindow):
 
     def action_set_font_base(self):
         txt = self.locales.get(self.app_config.get_language())
-        dialog = SettingsDialog(self, self.font_path, txt)
+        dialog = SettingsDialog(self, self.app_config.get_font_base_path(), txt)
         if dialog.exec():
             new_path = Path(dialog.result_path)
             self.app_config.set_font_base_path(new_path)
-            self.font_path = new_path
-            self.db = FontDatabase(self.app_config.get_db_path())
+            try:
+                self.db = FontDatabase(self.app_config.get_db_path())
+            except Exception as e:
+                logger.error("Database error: %s", e)
+                QMessageBox.critical(
+                    self,
+                    "Database Error",
+                    f"Failed to open database:\n{e}\n Default to current folder.",
+                )
+                self.app_config.set_font_base_path(Path.cwd())
+                self.db = FontDatabase(self.app_config.get_db_path())
             self.refresh_ui()
 
     def action_help(self):
         txt = self.locales.get(self.app_config.get_language())
         QMessageBox.information(self, txt["menu_help"], txt["msg_help"])
+
+    def action_clear(self):
+        self.app_config.clear()
+        txt = self.locales.get(self.app_config.get_language())
+        QMessageBox.information(self, txt["menu_clear"], txt["msg_clear"])
+        self.refresh_ui()
 
     def action_export(self):
         target = QFileDialog.getExistingDirectory(self, "Export Fonts")
@@ -1232,51 +1295,42 @@ class FontLoaderApp(QMainWindow):
                 self.process_dropped_files(all_subtitle_files)
 
     def process_dropped_files(self, file_list):
-        """Process multiple subtitle files at once."""
-        all_fonts = set()
-        total_subs = 0
-
-        for file_path in file_list:
-            if file_path.suffix.lower() in {".ass", ".ssa"}:
-                sub_count, font_list = extract_ass_fonts(file_path)
-                all_fonts.update(font_list)
-                total_subs += sub_count
-
-        if not all_fonts:
+        """Process multiple subtitle files using a background worker."""
+        if not file_list:
             return
 
-        font_list = list(all_fonts)
-
-        self.progress_bar.setRange(0, len(font_list))
+        self.progress_bar.setRange(0, len(file_list))
         self.progress_bar.setValue(0)
         self.progress_bar.show()
         self.lbl_progress_task.show()
+        txt = self.locales.get(self.app_config.get_language())
+        self.lbl_progress_task.setText(txt["msg_extracting_subs"])
 
-        self.load_thread = LoadWorker(
-            font_list, self.font_manager, self.db, self.font_path
+        self.extract_thread = ExtractWorker(file_list)
+        self.extract_thread.progress.connect(
+            lambda current, total: self.progress_bar.setValue(current)
         )
-        self.load_thread.progress.connect(self._on_load_progress)
-        self.load_thread.finished.connect(self._on_load_finished)
-        self.load_thread.start()
+        self.extract_thread.finished.connect(self._on_extract_finished)
+        self.extract_thread.start()
+
+    def _on_extract_finished(self, total_subs, font_list):
+        if not font_list:
+            self.progress_bar.hide()
+            self.lbl_progress_task.hide()
+            return
+
         self.stats["subtitles"] += total_subs
 
-    def process_dropped_path(self, path):
-        sub_count, font_list = extract_ass_fonts(path)
-        if not font_list:
-            return
-
+        # Transition to Loading phase
         self.progress_bar.setRange(0, len(font_list))
         self.progress_bar.setValue(0)
-        self.progress_bar.show()
-        self.lbl_progress_task.show()
 
         self.load_thread = LoadWorker(
-            font_list, self.font_manager, self.db, self.font_path
+            font_list, self.font_manager, self.db, self.app_config.get_font_base_path()
         )
         self.load_thread.progress.connect(self._on_load_progress)
         self.load_thread.finished.connect(self._on_load_finished)
         self.load_thread.start()
-        self.stats["subtitles"] += sub_count
 
     def _on_load_progress(self, idx, font_name, log_line):
         self.progress_bar.setValue(idx)
@@ -1377,8 +1431,6 @@ class AppConfig:
 
     def get_font_base_path(self) -> Path:
         """Get the font base directory."""
-        if platform.system() == "Windows" and Path(self.DB_NAME).exists():
-            return Path.cwd()
         return Path(self._settings.get("font_base_path", Path.cwd()))
 
     def set_font_base_path(self, path: Path):
@@ -1397,6 +1449,14 @@ class AppConfig:
         """Set the UI language."""
         self.set("ui_language", lang_code)
 
+    def clear(self):
+        """Clear all settings"""
+        self._settings = {
+            "font_base_path": str(Path.cwd()),
+            "ui_language": "en_us",
+        }
+        self._save_settings()
+
 
 if __name__ == "__main__":
     freeze_support()
@@ -1409,8 +1469,8 @@ if __name__ == "__main__":
     app.setApplicationName("FontLoaderSubRe")
     app.setDesktopFileName("FontLoaderSubRe")
 
-    sub_path_arg = Path(sys.argv[1]) if len(sys.argv) > 1 else None
-    window = FontLoaderApp(sub_path=sub_path_arg)
+    sub_paths = [Path(arg) for arg in sys.argv[1:]] if len(sys.argv) > 1 else []
+    window = FontLoaderApp(sub_paths=sub_paths)
 
     # add icon
     if platform.system() == "Darwin":
