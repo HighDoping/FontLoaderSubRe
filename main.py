@@ -554,9 +554,6 @@ class SessionFontManager:
                 return True, dest_path
 
             shutil.copy(font_path, dest_path)
-            if self.current_os == "Linux":
-                subprocess.run(["fc-cache", "-f"], check=True, capture_output=True)
-
             logger.info("Unix: Installed font to %s", dest_path)
             return True, dest_path
         except Exception as e:
@@ -606,12 +603,18 @@ class SessionFontManager:
         try:
             if path.exists():
                 path.unlink()
-                if self.current_os == "Linux":
-                    subprocess.run(["fc-cache", "-f"], check=True, capture_output=True)
             return True
         except Exception as e:
             logger.error("Error removing font %s: %s", path, e)
             return False
+
+    def cache_refresh(self):
+        if self.current_os == "Linux":
+            try:
+                subprocess.run(["fc-cache", "-f"], check=True, capture_output=True)
+                logger.info("Linux font cache refreshed.")
+            except Exception as e:
+                logger.error("Error refreshing Linux font cache: %s", e)
 
     def cleanup(self):
         """Iterates through status and unloads all loaded fonts."""
@@ -620,6 +623,7 @@ class SessionFontManager:
         for h in hashes:
             if self.status[h]["loaded"]:
                 self.unload_font(h)
+        self.cache_refresh()
         logger.debug("Cleanup complete.")
 
     def __enter__(self):
@@ -849,7 +853,13 @@ class LoadWorker(QThread):
     progress = Signal(int, str, str)  # index, font_name, log_line
     finished = Signal(list)
 
-    def __init__(self, font_list, font_manager, db, font_base_path):
+    def __init__(
+        self,
+        font_list: list,
+        font_manager: SessionFontManager,
+        db: FontDatabase,
+        font_base_path: Path,
+    ):
         super().__init__()
         self.font_list = font_list
         self.fm = font_manager
@@ -876,6 +886,7 @@ class LoadWorker(QThread):
 
             log_lines.append(log_line)
             self.progress.emit(i + 1, font, log_line)
+        self.fm.cache_refresh()
         self.finished.emit(log_lines)
 
 
@@ -921,11 +932,6 @@ class FontLoaderApp(QMainWindow):
 
         QTimer.singleShot(5, lambda: self.adjustSize())
         self.setAcceptDrops(True)
-
-        # add icon
-        icon_path = Path(__file__).parent / "resources" / "icon.png"
-        if icon_path.exists():
-            self.setWindowIcon(QIcon(str(icon_path)))
 
         # Configuration & Managers
         self.app_config = AppConfig()
@@ -1400,8 +1406,27 @@ if __name__ == "__main__":
     )
     app = QApplication(sys.argv)
 
+    app.setApplicationName("FontLoaderSubRe")
+    app.setDesktopFileName("FontLoaderSubRe")
+
     sub_path_arg = Path(sys.argv[1]) if len(sys.argv) > 1 else None
     window = FontLoaderApp(sub_path=sub_path_arg)
+
+    # add icon
+    if platform.system() == "Darwin":
+        icns_path = Path(__file__).parent / "resources" / "icon.icns"
+        if icns_path.exists():
+            icon = QIcon(str(icns_path))
+            window.setWindowIcon(icon)
+            # Set dock icon on macOS
+            app.setWindowIcon(icon)
+    else:
+        icon_path = Path(__file__).parent / "resources" / "icon.png"
+        if icon_path.exists():
+            icon = QIcon(str(icon_path))
+            window.setWindowIcon(icon)
+            app.setWindowIcon(icon)
+
     window.show()
 
     sys.exit(app.exec())
