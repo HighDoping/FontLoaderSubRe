@@ -976,7 +976,7 @@ class FontLoaderApp(QMainWindow):
         self.locales = {
             "en_us": {
                 "header": "Finished",
-                "status_1": "{loaded} fonts loaded, {errors} errors, {no_match} no match.",
+                "status_1": "{loaded} fonts loaded, {errors} errors, {no_match} unmatched.",
                 "status_2": "Index: {index_fonts} fonts, {index_names} names; {subtitles} subtitles.",
                 "btn_menu": "Menu",
                 "btn_details": "Details",
