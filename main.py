@@ -5,17 +5,16 @@ import hashlib
 import json
 import logging
 import platform
-import re
 import shutil
 import sqlite3
 import subprocess
 import sys
-import threading
 import webbrowser
 from multiprocessing import Pool, cpu_count, freeze_support
 from pathlib import Path
 from typing import Any, ClassVar, Optional
 
+import imohash
 from fontTools.ttLib import TTCollection, TTFont, TTLibFileIsCollectionError
 from platformdirs import user_config_dir
 from PySide6.QtCore import QSize, Qt, QThread, QTimer, Signal
@@ -67,7 +66,7 @@ class FontMetadataExtractor:
 
             # Helper to safely open font
             def process_ttfont(pt):
-                font = TTFont(pt)
+                font = TTFont(pt, lazy=True)
                 data = self._extract_font_details(font)
                 font.close()
                 return data
@@ -77,14 +76,14 @@ class FontMetadataExtractor:
                 fonts_data.append(process_ttfont(path_obj))
             except TTLibFileIsCollectionError:
                 # Fallback to collection
-                ttc = TTCollection(path_obj)
+                ttc = TTCollection(path_obj, lazy=True)
                 for i, font in enumerate(ttc):
                     fonts_data.append(self._extract_font_details(font, i))
             except Exception:
                 # If TTFont fails, it might be a true collection or invalid
                 # Try collection explicitly one last time
                 try:
-                    ttc = TTCollection(path_obj)
+                    ttc = TTCollection(path_obj, lazy=True)
                     for i, font in enumerate(ttc):
                         fonts_data.append(self._extract_font_details(font, i))
                 except Exception as e:
@@ -93,9 +92,7 @@ class FontMetadataExtractor:
                         "filepath": str(path_obj),
                     }
 
-            # Calculate MD5
-            with path_obj.open("rb") as f:
-                file_hash = hashlib.md5(f.read()).hexdigest()  # noqa: S324
+            file_hash = imohash.hashfile(path_obj,hexdigest=True)
 
             return {"filepath": str(path_obj), "fonts": fonts_data, "hash": file_hash}
 
@@ -425,14 +422,13 @@ class SessionFontManager:
         self.current_os = platform.system()
         self.status: dict[str, dict[str, Any]] = {}
 
-    def _calculate_file_md5(self, path: Path) -> str:
-        """Calculates the MD5 hash of a file by reading the whole file at once."""
-        try:
-            with path.open("rb") as f:
-                return hashlib.md5(f.read()).hexdigest().lower()
-        except OSError as e:
-            logger.error("Failed to read file for hashing '%s': %s", path, e)
-            return ""
+    # def _calculate_file_hash(self, path: Path) -> str:
+    #     """Calculates the MD5 hash of a file by reading the whole file at once."""
+    #     try:
+    #         return imohash.hashfile(path,hexdigest=True)
+    #     except OSError as e:
+    #         logger.error("Failed to read file for hashing '%s': %s", path, e)
+    #         return ""
 
     def _get_font_destination_path(
         self, font_path: Path
@@ -488,19 +484,19 @@ class SessionFontManager:
             self.status[expected_hash]["message"] = msg
             return False
 
-        # 4. Integrity Check
-        logger.debug("Verifying integrity of %s...", font_path.name)
-        actual_hash = self._calculate_file_md5(font_path)
+        # # 4. Integrity Check
+        # logger.debug("Verifying integrity of %s...", font_path.name)
+        # actual_hash = self._calculate_file_hash(font_path)
 
-        if not actual_hash:
-            self.status[expected_hash]["message"] = "Read error during hashing"
-            return False
+        # if not actual_hash:
+        #     self.status[expected_hash]["message"] = "Read error during hashing"
+        #     return False
 
-        if actual_hash != expected_hash:
-            msg = f"Hash Mismatch. Expected: {expected_hash}, Found: {actual_hash}"
-            logger.error(msg)
-            self.status[expected_hash]["message"] = msg
-            return False
+        # if actual_hash != expected_hash:
+        #     msg = f"Hash Mismatch. Expected: {expected_hash}, Found: {actual_hash}"
+        #     logger.error(msg)
+        #     self.status[expected_hash]["message"] = msg
+        #     return False
 
         # 5. OS Loading
         success = False
@@ -792,7 +788,7 @@ def scan_fonts_in_directory(db: FontDatabase, dir_path: Path, progress_callback=
                 # Reset buffers
                 batch_files = []
                 batch_names = {"full": [], "family": [], "ps": [], "unique": []}
-                logger.info(
+                logger.debug(
                     "Processed %d / %d files...",
                     final_stats["files_processed"],
                     len(font_files),
@@ -955,7 +951,6 @@ class FontLoaderApp(QMainWindow):
 
     def __init__(self, sub_paths: Optional[list[Path]] = None):
         super().__init__()
-        self.setWindowTitle("FontLoaderSubRe 0.1.1")
 
         QTimer.singleShot(5, lambda: self.adjustSize())
         self.setAcceptDrops(True)
@@ -997,7 +992,7 @@ class FontLoaderApp(QMainWindow):
                 "title_font_base": "Font Base Settings",
                 "lbl_current_path": "Current Base Path:",
                 "msg_export": "Export complete.",
-                "msg_help": "Drag SSA/ASS files or folder here. Use 'Update Index' if fonts change.",
+                "msg_help": "1. Open FontLoaderSubRe, set font directory path, index the fonts from menu. (Only needed first time)\n2. Drag-and-drop subtitles SSA/ASS files or folders onto the FontLoaderSubRe window.",
                 "msg_update_complete": "Index update complete.",
                 "msg_extracting_subs": "Extracting font names from subtitles...",
                 "msg_clear": "Settings cleared",
@@ -1022,7 +1017,7 @@ class FontLoaderApp(QMainWindow):
                 "title_font_base": "字型庫路徑設定",
                 "lbl_current_path": "目前字型庫路徑:",
                 "msg_export": "匯出完成。",
-                "msg_help": "將字幕拖入視窗。若字型庫變更請點擊「更新索引」。",
+                "msg_help": "1. 開啟 FontLoaderSubRe，設定字型库路徑，並從選單索引字型。（僅需首次執行）\n2. 將字幕 SSA/ASS 檔案或資料夾拖放至 FontLoaderSubRe 視窗。",
                 "msg_update_complete": "索引更新完成。",
                 "msg_extracting_subs": "從字幕中獲取字型名稱...",
                 "msg_clear": "設定已清除",
@@ -1047,7 +1042,7 @@ class FontLoaderApp(QMainWindow):
                 "title_font_base": "字体库路径设置",
                 "lbl_current_path": "当前字体库路径:",
                 "msg_export": "导出完成。",
-                "msg_help": "将字幕拖入窗口。若字体库变更请点击'更新索引'。",
+                "msg_help": "1. 打开FontLoaderSubRe，设置字体库路径，从菜单中索引字体。（仅首次需要）\n2. 将字幕SSA/ASS文件或文件夹拖拽至 FontLoaderSubRe 窗口。",
                 "msg_update_complete": "索引更新完成。",
                 "msg_extracting_subs": "从字幕中获取字体名称...",
                 "msg_clear": "设置已清除",
@@ -1471,6 +1466,7 @@ if __name__ == "__main__":
 
     sub_paths = [Path(arg) for arg in sys.argv[1:]] if len(sys.argv) > 1 else []
     window = FontLoaderApp(sub_paths=sub_paths)
+    window.setWindowTitle("FontLoaderSubRe 0.2.0")
 
     # add icon
     if platform.system() == "Darwin":
