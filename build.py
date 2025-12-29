@@ -13,7 +13,7 @@ nuitka_commands = [
     "-m",
     "nuitka",
     "--mode=app",
-    "--enable-plugin=tk-inter",
+    "--enable-plugin=pyside6",
     "--product-name=" + DESCRIPTION,
     "--company-name=" + AUTHOR,
     "--file-version=" + VERSION_BASE,

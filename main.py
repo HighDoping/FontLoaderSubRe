@@ -1,3 +1,5 @@
+import builtins
+import contextlib
 import ctypes
 import hashlib
 import json
@@ -9,16 +11,33 @@ import sqlite3
 import subprocess
 import sys
 import threading
-import tkinter as tk
 import webbrowser
 from multiprocessing import Pool, cpu_count, freeze_support
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
 from typing import Any, ClassVar, Optional
 
 from fontTools.ttLib import TTCollection, TTFont, TTLibFileIsCollectionError
 from platformdirs import user_config_dir
-from tkinterdnd2 import DND_FILES, TkinterDnD
+from PySide6.QtCore import QSize, Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QCursor, QIcon
+
+# PySide6 Imports
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QFileDialog,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QPlainTextEdit,
+    QProgressBar,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -695,7 +714,7 @@ def _worker_process_font(args):
         return None
 
 
-def scan_fonts_in_directory(db: FontDatabase, dir_path: Path):
+def scan_fonts_in_directory(db: FontDatabase, dir_path: Path, progress_callback=None):
     font_extensions = {".ttf", ".otf", ".ttc"}
     font_files = [
         p
@@ -711,6 +730,10 @@ def scan_fonts_in_directory(db: FontDatabase, dir_path: Path):
 
     if not font_files:
         return final_stats
+
+    total_files = len(font_files)
+    if progress_callback:
+        progress_callback(0, total_files)
 
     # 1. Clean DB
     db.clean_database()
@@ -728,6 +751,9 @@ def scan_fonts_in_directory(db: FontDatabase, dir_path: Path):
             _worker_process_font, args_iter, chunksize=10
         ):
             if not result:
+                final_stats["files_processed"] += 1
+                if progress_callback:
+                    progress_callback(final_stats["files_processed"], total_files)
                 continue
 
             f_hash = result["hash"]
@@ -750,6 +776,10 @@ def scan_fonts_in_directory(db: FontDatabase, dir_path: Path):
             final_stats["unique_font_names"]["family"] += len(result["family_names"])
             final_stats["unique_font_names"]["ps"] += len(result["ps_names"])
             final_stats["unique_font_names"]["unique"] += len(result["unique_ids"])
+
+            # Report progress
+            if progress_callback:
+                progress_callback(final_stats["files_processed"], total_files)
 
             # Flush Batch if full
             if len(batch_files) >= BATCH_SIZE:
@@ -787,60 +817,193 @@ def scan_fonts_in_directory(db: FontDatabase, dir_path: Path):
     return final_stats
 
 
-class FontLoaderApp:
+class ScanWorker(QThread):
+    """Background thread for scanning fonts."""
 
-    def __init__(self, root, sub_path: Optional[Path] = None):
-        self.root = root
-        self.root.title("FontLoaderSubRe 0.1.1")
-        self.root.resizable(True, True)
-        self.root.minsize(350, 160)
+    progress = Signal(int, int)  # current, total
+    finished = Signal(dict)
+    error = Signal(str)
 
+    def __init__(self, db, font_path):
+        super().__init__()
+        self.db = db
+        self.font_path = font_path
+
+    def run(self):
         try:
-            res_dir = Path(__file__).parent / "resources"
-            icon_ico = res_dir / "icon.ico"
-            icon_png = res_dir / "icon.png"
+            stats = scan_fonts_in_directory(
+                self.db,
+                Path(self.font_path),
+                progress_callback=lambda current, total: self.progress.emit(
+                    current, total
+                ),
+            )
+            self.finished.emit(stats)
+        except Exception as e:
+            self.error.emit(str(e))
 
-            if platform.system() == "Darwin":
-                if "__compiled__" not in globals() and icon_png.exists():
-                    self._icon_img = tk.PhotoImage(file=icon_png)
-                    self.root.iconphoto(True, self._icon_img)
-            elif platform.system() == "Windows":
-                if icon_ico.exists():
-                    self.root.iconbitmap(icon_ico)
-            elif platform.system() == "Linux" and icon_png.exists():
-                self._icon_img = tk.PhotoImage(file=icon_png)
-                self.root.iconphoto(True, self._icon_img)
-        except Exception:
-            logger.debug("Failed to load window icon.", exc_info=True)
 
-        self.root.drop_target_register(DND_FILES)
-        self.root.dnd_bind("<<Drop>>", self.on_drop)
+class LoadWorker(QThread):
+    """Background thread for loading fonts into the session."""
 
-        # Center window on screen
-        self.root.update_idletasks()
-        window_width = self.root.winfo_reqwidth()
-        window_height = self.root.winfo_reqheight()
-        screen_width = self.root.winfo_screenwidth()
-        screen_height = self.root.winfo_screenheight()
-        x = (screen_width - window_width) // 2
-        y = (screen_height - window_height) // 2
-        self.root.geometry(f"+{x}+{y}")
+    progress = Signal(int, str, str)  # index, font_name, log_line
+    finished = Signal(list)
 
-        self.project_link = "https://github.com/HighDoping/FontLoaderSubRe"
+    def __init__(self, font_list, font_manager, db, font_base_path):
+        super().__init__()
+        self.font_list = font_list
+        self.fm = font_manager
+        self.db = db
+        self.font_base = font_base_path
 
+    def run(self):
+        log_lines = []
+        for i, font in enumerate(self.font_list):
+            res = self.db.search_by_font(font)
+            log_line = ""
+            if res:
+                relative_path_str = res[0][0]
+                f_path = (Path(self.font_base) / Path(relative_path_str)).absolute()
+                f_hash = res[0][1]
+                success = self.fm.load_font(f_path, f_hash)
+                if success:
+                    log_line = f"[ok] {font} > {relative_path_str}\n"
+                else:
+                    msg = self.fm.status.get(f_hash, {}).get("message", "Error")
+                    log_line = f"[xx] {font} > {relative_path_str} ({msg})\n"
+            else:
+                log_line = f"[??] {font}\n"
+
+            log_lines.append(log_line)
+            self.progress.emit(i + 1, font, log_line)
+        self.finished.emit(log_lines)
+
+
+class SettingsDialog(QDialog):
+    """Popup for changing font base path."""
+
+    def __init__(self, parent, current_path, locale):
+        super().__init__(parent)
+        self.locales = locale
+        self.setWindowTitle(locale["title_font_base"])
+        layout = QVBoxLayout(self)
+
+        layout.addWidget(QLabel(locale["lbl_current_path"]))
+        self.entry = QLineEdit(str(current_path))
+        self.entry.setReadOnly(True)
+        layout.addWidget(self.entry)
+
+        btn_layout = QHBoxLayout()
+        self.btn_change = QPushButton(locale["btn_change"])
+        self.btn_close = QPushButton(locale["btn_close"])
+        btn_layout.addStretch()
+        btn_layout.addWidget(self.btn_change)
+        btn_layout.addWidget(self.btn_close)
+        layout.addLayout(btn_layout)
+
+        self.btn_close.clicked.connect(self.accept)
+        self.btn_change.clicked.connect(self.select_dir)
+        self.result_path = current_path
+
+    def select_dir(self):
+        new_dir = QFileDialog.getExistingDirectory(
+            self, self.locales["select_font_base"], str(self.result_path)
+        )
+        if new_dir:
+            self.result_path = new_dir
+            self.entry.setText(new_dir)
+
+
+class FontLoaderApp(QMainWindow):
+    def __init__(self, sub_path: Optional[Path] = None):
+        super().__init__()
+        self.setWindowTitle("FontLoaderSubRe 0.1.1")
+
+        QTimer.singleShot(5, lambda: self.adjustSize())
+        self.setAcceptDrops(True)
+
+        # add icon
+        icon_path = Path(__file__).parent / "resources" / "icon.png"
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
+
+        # Configuration & Managers
         self.app_config = AppConfig()
         self.db = FontDatabase(self.app_config.get_db_path())
         self.font_manager = SessionFontManager()
-
-        self.sub_path = sub_path
         self.font_path = self.app_config.get_font_base_path()
+        self.project_link = "https://github.com/HighDoping/FontLoaderSubRe"
 
-        logger.debug("FontLoaderApp initialized.")
-        logger.debug(f"Font base path: {self.font_path}")
-        logger.debug(f"Subtitle path: {self.sub_path}")
-        logger.debug(f"Database path: {self.db.db_name}")
+        # Localization
+        self.locales = {
+            "en_us": {
+                "header": "Finished",
+                "status_1": "{loaded} fonts loaded, {errors} errors, {no_match} no match.",
+                "status_2": "Index: {index_fonts} fonts, {index_names} names; {subtitles} subtitles.",
+                "btn_menu": "Menu",
+                "btn_details": "Details",
+                "btn_close": "Close",
+                "btn_change": "Change...",
+                "menu_update": "Update Index",
+                "menu_font_base": "Set Font Base",
+                "select_font_base": "Select Font Base Directory",
+                "menu_export": "Export Fonts",
+                "menu_help": "Help",
+                "menu_lang": "Language",
+                "title_font_base": "Font Base Settings",
+                "lbl_current_path": "Current Base Path:",
+                "msg_export": "Export complete.",
+                "msg_help": "Drag SSA/ASS files or folder here. Use 'Update Index' if fonts change.",
+                "msg_update_complete": "Index update complete.",
+                "footer": f"GPLv2: {self.project_link}",
+                "error": "Error",
+            },
+            "zh_tw": {
+                "header": "完成",
+                "status_1": "{loaded} 個字型載入成功，{errors} 個出錯，{no_match} 個無匹配。",
+                "status_2": "索引中有 {index_fonts} 個字型，{index_names} 種名稱；當前共 {subtitles} 個字幕。",
+                "btn_menu": "選單",
+                "btn_details": "詳情",
+                "btn_close": "關閉",
+                "btn_change": "變更...",
+                "menu_update": "更新索引",
+                "menu_font_base": "設定字型庫",
+                "select_font_base": "設定字型庫資料夾",
+                "menu_export": "匯出字型",
+                "menu_help": "說明",
+                "menu_lang": "語言",
+                "title_font_base": "字型庫路徑設定",
+                "lbl_current_path": "目前字型庫路徑:",
+                "msg_export": "匯出完成。",
+                "msg_help": "將字幕拖入視窗。若字型庫變更請點擊「更新索引」。",
+                "msg_update_complete": "索引更新完成。",
+                "footer": f"GPLv2: {self.project_link}",
+                "error": "錯誤",
+            },
+            "zh_cn": {
+                "header": "完成",
+                "status_1": "{loaded} 个字体加载成功，{errors} 个出错，{no_match} 个无匹配。",
+                "status_2": "索引中有 {index_fonts} 个字体，{index_names} 种名称；当前共 {subtitles} 个字幕。",
+                "btn_menu": "菜单",
+                "btn_details": "详情",
+                "btn_close": "关闭",
+                "btn_change": "更改...",
+                "menu_update": "更新索引",
+                "menu_font_base": "设置字体库",
+                "select_font_base": "设置字体库文件夹",
+                "menu_export": "导出字体",
+                "menu_help": "帮助",
+                "menu_lang": "语言",
+                "title_font_base": "字体库路径设置",
+                "lbl_current_path": "当前字体库路径:",
+                "msg_export": "导出完成。",
+                "msg_help": "将字幕拖入窗口。若字体库变更请点击'更新索引'。",
+                "msg_update_complete": "索引更新完成。",
+                "footer": f"GPLv2: {self.project_link}",
+                "error": "错误",
+            },
+        }
 
-        # --- Dynamic Data (The Numbers) ---
         self.stats = {
             "loaded": 0,
             "errors": 0,
@@ -849,229 +1012,84 @@ class FontLoaderApp:
             "index_names": 0,
             "subtitles": 0,
         }
-
-        # --- State ---
-        self.details_visible = False  # New state for foldable details
-
-        # --- Localization Data ---
-        self.locales = {
-            "zh_cn": {
-                "header": "完成",
-                "status_1": "{loaded} 个字体加载成功，{errors} 个出错，{no_match} 个无匹配。",
-                "status_2": "索引中有 {index_fonts} 个字体，{index_names} 种名称；当前共 {subtitles} 个字幕。",
-                "btn_menu": "菜单",
-                "btn_details": "详情",
-                "btn_close": "关闭",
-                "btn_change": "更改...",  # Added
-                "menu_update": "更新索引",
-                "menu_font_base": "设置字体库",  # Added
-                "msg_update_complete": "字体索引更新完成。",
-                "menu_export": "导出字体",
-                "menu_help": "FontLoaderSubRe帮助",
-                "menu_lang": "语言",
-                "title_font_base": "字体库路径设置",  # Added
-                "lbl_current_path": "当前字体库路径:",  # Added
-                "msg_export": "导出字体完成。",
-                "msg_help": "使用方法：\n1. 将本程序移动到字体文件夹（Windows）,或在目录中设置字体库路径；\n2. 把字幕或其文件夹拖动到程序、快捷方式（Windows），或窗口上；\n3. 字体库变更后请“更新索引”。",
-                "footer": f"GPLv2: {self.project_link}",
-            },
-            "zh_tw": {
-                "header": "完成",
-                "status_1": "{loaded} 個字型載入成功，{errors} 個錯誤，{no_match} 個無匹配。",
-                "status_2": "索引中有 {index_fonts} 個字型，{index_names} 種名稱；當前共 {subtitles} 個字幕。",
-                "btn_menu": "菜單",
-                "btn_details": "詳情",
-                "btn_close": "關閉",
-                "btn_change": "更改...",  # Added
-                "menu_update": "更新索引",
-                "menu_font_base": "設定字型庫",  # Added
-                "msg_update_complete": "字型索引更新完成。",
-                "menu_export": "匯出字型",
-                "menu_help": "FontLoaderSubRe幫助",
-                "menu_lang": "語言",
-                "title_font_base": "字型庫路徑設定",  # Added
-                "lbl_current_path": "當前字型庫路徑:",  # Added
-                "msg_export": "匯出字型完成。",
-                "msg_help": "使用方法：\n1. 將本程式移動到字型資料夾（Windows）,或在目錄中設定字型庫路徑；\n2. 把字幕或其資料夾拖動到程式、捷徑（Windows），或視窗上；\n3. 字型庫變更後請“更新索引”。",
-                "footer": f"GPLv2: {self.project_link}",
-            },
-            "en_us": {
-                "header": "Finished",
-                "status_1": "{loaded} fonts loaded, {errors} errors, {no_match} no match.",
-                "status_2": "Index: {index_fonts} fonts, {index_names} names; {subtitles} subtitles.",
-                "btn_menu": "Menu",
-                "btn_details": "Details",
-                "btn_close": "Close",
-                "btn_change": "Change...",  # Added
-                "menu_update": "Update Index",
-                "menu_font_base": "Set Font Base",  # Added
-                "msg_update_complete": "Font index update complete.",
-                "menu_export": "Export Fonts",
-                "menu_help": "FontLoaderSubRe Help",
-                "menu_lang": "Language",
-                "title_font_base": "Font Base Settings",  # Added
-                "lbl_current_path": "Current Base Path:",  # Added
-                "msg_export": "Font export complete.",
-                "msg_help": "Instructions:\n1. Move this program to your font folder (Windows), or set the font base path in the menu;\n2. Drag and drop subtitle files or folders onto the program, shortcut (Windows), or window;\n3. Please 'Update Index' after changing the font base.",
-                "footer": f"GPLv2: {self.project_link}",
-            },
-        }
-
-        self.create_widgets()
+        self.init_ui()
         self.refresh_ui()
-        if self.sub_path is None:
-            # self.action_help()
-            pass
-        else:
-            self.load_fonts()
 
-    def create_widgets(self):
-        # CHANGED: Reduced outer padding (was "15 15 15 5" -> "10 10 10 2")
-        main_frame = ttk.Frame(self.root, padding="10 10 10 2")
-        main_frame.pack(fill=tk.BOTH, expand=True)
+        if sub_path:
+            QTimer.singleShot(100, lambda: self.process_dropped_path(sub_path))
 
-        # 1. Header
-        self.lbl_header = ttk.Label(
-            main_frame,
-            text="",
-            foreground="#0033CC",
-            font=("", 16, "bold"),
+    def init_ui(self):
+        central = QWidget()
+        self.setCentralWidget(central)
+        self.main_layout = QVBoxLayout(central)
+
+        # Labels
+        self.lbl_header = QLabel()
+        self.lbl_header.setStyleSheet(
+            "font-size: 18px; font-weight: bold; color: #0033CC;"
         )
-        self.lbl_header.pack(anchor="w", pady=(0, 5))
+        self.main_layout.addWidget(self.lbl_header)
 
-        # 2. Status Lines (Dynamic Text)
-        self.lbl_status1 = ttk.Label(main_frame, text="")
-        self.lbl_status1.pack(anchor="w", pady=(0, 0))
+        self.lbl_status1 = QLabel()
+        self.lbl_status2 = QLabel()
+        self.main_layout.addWidget(self.lbl_status1)
+        self.main_layout.addWidget(self.lbl_status2)
 
-        self.lbl_status2 = ttk.Label(main_frame, text="")
-        self.lbl_status2.pack(anchor="w", pady=(0, 10))
+        # Progress
+        self.progress_bar = QProgressBar()
+        self.progress_bar.hide()
+        self.lbl_progress_task = QLabel()
+        self.lbl_progress_task.hide()
+        self.main_layout.addWidget(self.progress_bar)
+        self.main_layout.addWidget(self.lbl_progress_task)
 
-        self.progress_var = tk.DoubleVar()
-        self.progress_bar = ttk.Progressbar(
-            main_frame, variable=self.progress_var, maximum=100, mode="determinate"
-        )
-        # Hide it initially
-        self.lbl_progress_task = ttk.Label(main_frame, text="", font=("", 8))
+        # Buttons
+        btn_layout = QHBoxLayout()
+        self.btn_menu = QPushButton()
+        self.btn_details = QPushButton()
+        self.btn_close = QPushButton()
 
-        # 3. Details Frame (Hidden by default)
-        self.frame_details = ttk.Frame(main_frame)
-        self.txt_details = tk.Text(
-            self.frame_details,
-            height=10,
-            width=50,
-            state="disabled",
-            font=("Consolas", 9),
-        )
-        scroll_details = ttk.Scrollbar(
-            self.frame_details, orient="vertical", command=self.txt_details.yview
-        )
-        self.txt_details.configure(yscrollcommand=scroll_details.set)
+        self.btn_menu.clicked.connect(self.show_popup_menu)
+        self.btn_details.clicked.connect(self.toggle_details)
+        self.btn_close.clicked.connect(self.close)
 
-        self.txt_details.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scroll_details.pack(side=tk.RIGHT, fill=tk.Y)
+        btn_layout.addWidget(self.btn_menu)
+        btn_layout.addWidget(self.btn_details)
+        btn_layout.addStretch()
+        btn_layout.addWidget(self.btn_close)
+        self.main_layout.addLayout(btn_layout)
 
-        # 4. Buttons
-        btn_frame = ttk.Frame(main_frame)
-        btn_frame.pack(fill=tk.X, pady=5, side=tk.BOTTOM, anchor="s")
+        # Footer
+        self.lbl_footer = QLabel()
+        self.lbl_footer.setStyleSheet("color: blue; text-decoration: underline;")
+        self.lbl_footer.setCursor(Qt.PointingHandCursor)
+        self.lbl_footer.mousePressEvent = lambda e: webbrowser.open(self.project_link)
+        self.main_layout.addWidget(self.lbl_footer)
 
-        self.btn_menu = ttk.Button(btn_frame, command=self.show_menu)
-        self.btn_menu.pack(side=tk.LEFT, padx=(0, 5))
-
-        self.btn_details = ttk.Button(btn_frame, command=self.toggle_details)
-        self.btn_details.pack(side=tk.LEFT, padx=(0, 5))
-
-        self.btn_close = ttk.Button(btn_frame, command=self.action_close)
-        self.btn_close.pack(side=tk.RIGHT, padx=(5, 0))
-
-        # 5. Footer
-        footer_frame = ttk.Frame(self.root)
-        footer_frame.pack(fill=tk.X, side=tk.BOTTOM)
-
-        ttk.Separator(footer_frame, orient="horizontal").pack(fill=tk.X)
-
-        link_inner_frame = ttk.Frame(footer_frame, padding="5 2")
-        link_inner_frame.pack(fill=tk.X, anchor="w")
-
-        self.lbl_footer = ttk.Label(link_inner_frame, foreground="blue", cursor="hand2")
-        self.lbl_footer.pack(side=tk.LEFT)
-        self.lbl_footer.bind("<Button-1>", lambda e: webbrowser.open(self.project_link))
-
-    def toggle_details(self):
-        """Toggles the visibility of the details log."""
-        if self.details_visible:
-            self.frame_details.pack_forget()
-            self.details_visible = False
-            # self.root.geometry("") # Reset to allow shrinking if desired
-        else:
-            self.frame_details.pack(
-                fill=tk.BOTH,
-                expand=True,
-                before=self.lbl_header.master.pack_slaves()[-1],
-            )
-            self.details_visible = True
+        # Details Area
+        self.txt_details = QPlainTextEdit()
+        self.txt_details.setReadOnly(True)
+        self.txt_details.hide()
+        self.main_layout.addWidget(self.txt_details)
 
     def refresh_ui(self):
-        """Updates all labels based on current stats and language"""
-        txt = self.locales[self.app_config.get_language()]
+        txt = self.locales.get(self.app_config.get_language())
 
-        self.lbl_header.config(text=txt["header"])
+        self.lbl_header.setText(txt["header"])
+        self.update_stats_from_db()
 
-        self.updata_stats()
-        s1 = txt["status_1"].format(**self.stats)
-        s2 = txt["status_2"].format(**self.stats)
+        self.lbl_status1.setText(txt["status_1"].format(**self.stats))
+        self.lbl_status2.setText(txt["status_2"].format(**self.stats))
+        self.btn_menu.setText(txt["btn_menu"])
+        self.btn_details.setText(txt["btn_details"])
+        self.btn_close.setText(txt["btn_close"])
+        self.lbl_footer.setText(txt["footer"])
 
-        self.lbl_status1.config(text=s1)
-        self.lbl_status2.config(text=s2)
-
-        self.btn_menu.config(text=txt["btn_menu"])
-        self.btn_details.config(text=txt["btn_details"])
-        self.btn_close.config(text=txt["btn_close"])
-        self.lbl_footer.config(text=txt["footer"])
-
-    def create_popup_menu(self):
-        """Recreates the popup menu to ensure language is correct"""
-        self.popup_menu = tk.Menu(self.root, tearoff=0)
-        txt = self.locales[self.app_config.get_language()]
-
-        # Actions
-        self.popup_menu.add_command(
-            label=txt["menu_update"], command=self.action_update_index
-        )
-        self.popup_menu.add_command(
-            label=txt["menu_font_base"], command=self.action_set_font_base
-        )
-        self.popup_menu.add_command(
-            label=txt["menu_export"], command=self.action_export
-        )
-        self.popup_menu.add_separator()
-        self.popup_menu.add_command(label=txt["menu_help"], command=self.action_help)
-        self.popup_menu.add_separator()
-
-        # Language Submenu
-        lang_menu = tk.Menu(self.popup_menu, tearoff=0)
-        lang_menu.add_command(label="English", command=lambda: self.set_lang("en_us"))
-        lang_menu.add_command(label="正體中文", command=lambda: self.set_lang("zh_tw"))
-        lang_menu.add_command(label="简体中文", command=lambda: self.set_lang("zh_cn"))
-
-        self.popup_menu.add_cascade(label=txt["menu_lang"], menu=lang_menu)
-
-    def show_menu(self):
-        self.create_popup_menu()
-        # Post menu right under the button
-        x = self.btn_menu.winfo_rootx()
-        y = self.btn_menu.winfo_rooty() + self.btn_menu.winfo_height()
-        self.popup_menu.post(x, y)
-
-    def set_lang(self, lang_code):
-        self.app_config.set_language(lang_code)
-        self.refresh_ui()
-
-    def updata_stats(self):
-        """Fetches latest stats from the database."""
+    def update_stats_from_db(self):
         self.stats["index_fonts"] = int(self.db.metadata_get("file_count") or 0)
         self.stats["index_names"] = sum(
-            int(self.db.metadata_get(key) or 0)
-            for key in [
+            int(self.db.metadata_get(k) or 0)
+            for k in [
                 "ps_name_count",
                 "family_name_count",
                 "full_name_count",
@@ -1079,222 +1097,230 @@ class FontLoaderApp:
             ]
         )
 
-    def action_update_index(self):
-        """Run the font directory scan in a background thread."""
-        self.btn_menu.configure(state="disabled")
-        self.progress_bar.pack(fill=tk.X, pady=(0, 5))
-        self.progress_bar.configure(mode="indeterminate")
-        self.progress_bar.start(10)
+    def toggle_details(self):
+        if self.txt_details.isVisible():
+            self.txt_details.hide()
+            if self.centralWidget().layout():
+                self.centralWidget().layout().activate()
+            self.adjustSize()
+        else:
+            self.txt_details.show()
 
-        txt = self.locales[self.app_config.get_language()]
-        self.lbl_progress_task.config(text=txt["menu_update"] + "...")
-        self.lbl_progress_task.pack(anchor="w")
+    def show_popup_menu(self):
+        menu = QMenu(self)
+        txt = self.locales.get(self.app_config.get_language())
 
-        def run_scan():
-            try:
-                scan_fonts_in_directory(self.db, Path(self.font_path))
-                self.root.after(0, self._on_index_complete)
-            except Exception as e:
-                logger.error(f"Scan failed: {e}")
-                self.root.after(0, lambda: messagebox.showerror("Error", str(e)))
+        act_update = menu.addAction(txt["menu_update"])
+        act_update.triggered.connect(self.action_update_index)
 
-        threading.Thread(target=run_scan, daemon=True).start()
+        act_base = menu.addAction(txt["menu_font_base"])
+        act_base.triggered.connect(self.action_set_font_base)
 
-    def _on_index_complete(self):
-        """Handle UI cleanup after index update."""
-        self.progress_bar.stop()
-        self.progress_bar.pack_forget()
-        self.lbl_progress_task.pack_forget()
-        self.btn_menu.configure(state="normal")
-        self.refresh_ui()
+        act_export = menu.addAction(txt["menu_export"])
+        act_export.triggered.connect(self.action_export)
 
-        txt = self.locales[self.app_config.get_language()]
-        messagebox.showinfo(txt["menu_update"], txt["msg_update_complete"])
-    def action_set_font_base(self):
-        txt = self.locales[self.app_config.get_language()]
-        logger.debug("Action: Set Font Base")
-
-        # Create Modal Toplevel Window
-        top = tk.Toplevel(self.root)
-        top.title(txt["title_font_base"])
-        top.geometry("420x130")
-        top.resizable(False, False)
-
-        # Center relative to parent
-        try:
-            x = self.root.winfo_rootx() + (self.root.winfo_width() // 2) - 210
-            y = self.root.winfo_rooty() + (self.root.winfo_height() // 2) - 65
-            top.geometry(f"+{x}+{y}")
-        except Exception:
-            pass  # Fallback to default placement if calculation fails
-
-        # UI Elements
-        ttk.Label(top, text=txt["lbl_current_path"]).pack(pady=(15, 5), padx=15, anchor="w")
-
-        path_var = tk.StringVar(value=str(self.font_path))
-        entry = ttk.Entry(top, textvariable=path_var, state="readonly")
-        entry.pack(fill=tk.X, padx=15, pady=5)
-
-        def do_change():
-            new_path = filedialog.askdirectory(initialdir=self.font_path, parent=top)
-            if new_path:
-                self.app_config.set_font_base_path(Path(new_path))
-                self.font_path = Path(new_path)
-                path_var.set(str(self.font_path))
-                logger.info(f"Font base changed to: {self.font_path}")
-                top.lift() # Bring focus back to dialog
-
-        # Button Row
-        btn_frame = ttk.Frame(top)
-        btn_frame.pack(fill=tk.X, pady=10, padx=15, side=tk.BOTTOM)
-
-        ttk.Button(btn_frame, text=txt["btn_close"], command=top.destroy).pack(side=tk.RIGHT)
-        ttk.Button(btn_frame, text=txt["btn_change"], command=do_change).pack(side=tk.RIGHT, padx=5)
-
-        # Make Modal
-        top.transient(self.root)
-        top.grab_set()
-        self.root.wait_window(top)
-
-        self.db = FontDatabase(self.app_config.get_db_path())
-        self.refresh_ui()
-
-    def action_export(self):
-        txt = self.locales[self.app_config.get_language()]
-        logger.debug("Action: Export Fonts")
-
-        # Ask for export directory
-        export_dir = filedialog.askdirectory(
-            title=txt["menu_export"],
-            initialdir=str(Path.home()  ),
+        menu.addSeparator()
+        lang_menu = menu.addMenu(txt["menu_lang"])
+        lang_menu.addAction("English").triggered.connect(lambda: self.set_lang("en_us"))
+        lang_menu.addAction("正體中文").triggered.connect(
+            lambda: self.set_lang("zh_tw")
         )
-        if not export_dir:
-            return  # User cancelled
-        export_path = Path(export_dir)
-        # Export loaded fonts
-        for font_hash, info in self.font_manager.status.items():
-            if info["loaded"]:
-                src_path = info["sys_path"]
-                if src_path and src_path.exists():
-                    dest_path = export_path / src_path.name
-                    try:
-                        shutil.copy(src_path, dest_path)
-                    except Exception as e:
-                        logger.error("Failed to export font %s: %s", src_path.name, e)
+        lang_menu.addAction("简体中文").triggered.connect(
+            lambda: self.set_lang("zh_cn")
+        )
 
-        messagebox.showinfo(txt["menu_export"], txt["msg_export"])
+        menu.addSeparator()
+        menu.addAction(txt["menu_help"]).triggered.connect(self.action_help)
+
+        menu.exec(QCursor.pos())
+
+    def set_lang(self, code):
+        self.app_config.set_language(code)
+        self.refresh_ui()
+
+    def action_update_index(self):
+        self.btn_menu.setEnabled(False)
+
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.show()
+        self.lbl_progress_task.show()
+
+        self.scan_thread = ScanWorker(self.db, self.font_path)
+
+        self.scan_thread.progress.connect(self._on_scan_progress)
+
+        self.scan_thread.finished.connect(self._on_scan_finished)
+        txt = self.locales.get(self.app_config.get_language())
+        self.scan_thread.error.connect(
+            lambda e: QMessageBox.critical(self, txt["error"], e)
+        )
+        self.scan_thread.start()
+
+    def _on_scan_progress(self, current, total):
+        self.progress_bar.setRange(0, total)
+        self.progress_bar.setValue(current)
+        txt = self.locales.get(self.app_config.get_language())
+        task_text = f"{txt['menu_update']}... ({current} / {total})"
+        self.lbl_progress_task.setText(task_text)
+
+    def _on_scan_finished(self, stats):
+        self.progress_bar.hide()
+        self.lbl_progress_task.hide()
+        self.btn_menu.setEnabled(True)
+        if self.centralWidget().layout():
+            self.centralWidget().layout().activate()
+        self.adjustSize()
+        self.refresh_ui()
+
+        txt = self.locales.get(self.app_config.get_language())
+        QMessageBox.information(self, txt["menu_update"], txt["msg_update_complete"])
+
+    def action_set_font_base(self):
+        txt = self.locales.get(self.app_config.get_language())
+        dialog = SettingsDialog(self, self.font_path, txt)
+        if dialog.exec():
+            new_path = Path(dialog.result_path)
+            self.app_config.set_font_base_path(new_path)
+            self.font_path = new_path
+            self.db = FontDatabase(self.app_config.get_db_path())
+            self.refresh_ui()
 
     def action_help(self):
-        txt = self.locales[self.app_config.get_language()]
-        logger.debug("Action: Help opened")
-        messagebox.showinfo(txt["menu_help"], txt["msg_help"])
+        txt = self.locales.get(self.app_config.get_language())
+        QMessageBox.information(self, txt["menu_help"], txt["msg_help"])
 
-    def action_close(self):
-        logger.debug("Action: Close clicked")
-        self.font_manager.cleanup()
-        self.root.destroy()
-    def _parse_drop_files(self, data):
-        """Parses the string returned by tkinterdnd2.
+    def action_export(self):
+        target = QFileDialog.getExistingDirectory(self, "Export Fonts")
+        if not target:
+            return
+        target_path = Path(target)
+        for h, info in self.font_manager.status.items():
+            if info["loaded"] and info["sys_path"]:
+                with contextlib.suppress(builtins.BaseException):
+                    shutil.copy(info["sys_path"], target_path / info["sys_path"].name)
+        txt = self.locales.get(self.app_config.get_language())
+        QMessageBox.information(self, txt["menu_export"], txt["msg_export"])
 
-        Handles paths with spaces (wrapped in {}) and multiple files.
-        Returns a list of paths.
-        """
-        # Regex to capture content inside {} or non-whitespace sequences
-        pattern = r'\{(.+?)\}|(\S+)'
-        files = []
-        for match in re.finditer(pattern, data):
-            # group(1) is inside {}, group(2) is a standard word
-            path = match.group(1) or match.group(2)
-            if path:
-                files.append(Path(path))
-        return files
+    # --- Drag & Drop ---
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.accept()
+        else:
+            event.ignore()
 
-    def on_drop(self, event):
-        """Handle file drops from Finder/Explorer"""
-        dropped_files = self._parse_drop_files(event.data)
+    def dropEvent(self, event):
+        files = [Path(u.toLocalFile()) for u in event.mimeData().urls()]
+        if files:
+            # Collect all subtitle files from dropped items
+            all_subtitle_files = []
+            for f in files:
+                if f.is_dir():
+                    # Use rglob to find all .ass and .ssa files recursively
+                    all_subtitle_files.extend(f.rglob("*.[aA][sS][sS]"))
+                    all_subtitle_files.extend(f.rglob("*.[sS][sS][aA]"))
+                elif f.is_file() and f.suffix.lower() in {".ass", ".ssa"}:
+                    all_subtitle_files.append(f)
 
-        if not dropped_files:
+            if all_subtitle_files:
+                self.process_dropped_files(all_subtitle_files)
+
+    def process_dropped_files(self, file_list):
+        """Process multiple subtitle files at once."""
+        all_fonts = set()
+        total_subs = 0
+
+        for file_path in file_list:
+            if file_path.suffix.lower() in {".ass", ".ssa"}:
+                sub_count, font_list = extract_ass_fonts(file_path)
+                all_fonts.update(font_list)
+                total_subs += sub_count
+
+        if not all_fonts:
             return
 
-        # Take the first dropped file/folder
-        new_path = dropped_files[0]
-        logger.info(f"File dropped: {new_path}")
+        font_list = list(all_fonts)
 
-        # Update sub_path and reload
-        self.sub_path = new_path
-        self.load_fonts()
+        self.progress_bar.setRange(0, len(font_list))
+        self.progress_bar.setValue(0)
+        self.progress_bar.show()
+        self.lbl_progress_task.show()
 
-    def load_fonts(self):
-        """Begin the font loading process asynchronously."""
-        file_path = self.sub_path
-        sub_count, font_list = extract_ass_fonts(file_path)
+        self.load_thread = LoadWorker(
+            font_list, self.font_manager, self.db, self.font_path
+        )
+        self.load_thread.progress.connect(self._on_load_progress)
+        self.load_thread.finished.connect(self._on_load_finished)
+        self.load_thread.start()
+        self.stats["subtitles"] += total_subs
 
+    def process_dropped_path(self, path):
+        sub_count, font_list = extract_ass_fonts(path)
         if not font_list:
-            self.refresh_ui()
             return
 
-        self.txt_details.config(state="normal")
-        self.progress_bar.pack(fill=tk.X, pady=(0, 5))
-        self.progress_bar.configure(mode="determinate")
-        self.progress_var.set(0)
+        self.progress_bar.setRange(0, len(font_list))
+        self.progress_bar.setValue(0)
+        self.progress_bar.show()
+        self.lbl_progress_task.show()
 
-        # Start incremental processing
-        self._process_font_queue(font_list, 0, sub_count, [])
+        self.load_thread = LoadWorker(
+            font_list, self.font_manager, self.db, self.font_path
+        )
+        self.load_thread.progress.connect(self._on_load_progress)
+        self.load_thread.finished.connect(self._on_load_finished)
+        self.load_thread.start()
+        self.stats["subtitles"] += sub_count
 
-    def _process_font_queue(self, font_list: list[str], index: int, sub_count: int, log_lines: list[str]):
-        """Process one font at a time using root.after to keep GUI alive."""
-        if index >= len(font_list):
-            # Finalize
-            self._finalize_load(log_lines, sub_count)
-            return
+    def _on_load_progress(self, idx, font_name, log_line):
+        self.progress_bar.setValue(idx)
+        self.lbl_progress_task.setText(f"Loading: {font_name}")
 
-        font = font_list[index]
-        self.lbl_progress_task.config(text=f"Loading: {font}")
-        self.lbl_progress_task.pack(anchor="w")
-
-        # Update progress bar
-        progress = (index / len(font_list)) * 100
-        self.progress_var.set(progress)
-
-        # Logic for matching and loading
-        res = self.db.search_by_font(font)
-        log_line = ""
-        if res:
-            relative_path_str = res[0][0]
-            font_path = (Path(self.font_path) / Path(relative_path_str)).absolute()
-            font_hash = res[0][1]
-            success = self.font_manager.load_font(font_path, font_hash)
-
-            if success:
-                self.stats["loaded"] += 1
-                log_line = f"[ok] {font} > {relative_path_str}\n"
-            else:
-                self.stats["errors"] += 1
-                msg = self.font_manager.status.get(font_hash, {}).get("message", "Error")
-                log_line = f"[xx] {font} > {relative_path_str} ({msg})\n"
+        if "[ok]" in log_line:
+            self.stats["loaded"] += 1
+        elif "[xx]" in log_line:
+            self.stats["errors"] += 1
         else:
             self.stats["no_match"] += 1
-            log_line = f"[??] {font}\n"
 
-        log_lines.append(log_line)
+    def _on_load_finished(self, log_lines):
+        self.progress_bar.hide()
+        self.lbl_progress_task.hide()
+        if self.centralWidget().layout():
+            self.centralWidget().layout().activate()
+        self.adjustSize()
 
-        # Schedule next font in 10ms (allows UI to breathe)
-        self.root.after(10, self._process_font_queue, font_list, index + 1, sub_count, log_lines)
+        previously_loaded = self.txt_details.toPlainText().splitlines()
+        all_lines = previously_loaded + [line.strip() for line in log_lines]
 
-    def _finalize_load(self, log_lines: list[str], sub_count: int):
-        """Update logs and UI after all fonts are processed."""
-        log_lines.sort(key=lambda x: (0 if x.startswith("[ok]") else 1 if x.startswith("[xx]") else 2))
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_lines = []
+        for line in all_lines:
+            if line and line not in seen:
+                seen.add(line)
+                unique_lines.append(line)
 
-        for line in log_lines:
-            self.txt_details.insert(tk.END, line)
+        # Reorder log lines by status: [ok], [xx], [??]
+        ok_lines = [line for line in unique_lines if line.startswith("[ok]")]
+        error_lines = [line for line in unique_lines if line.startswith("[xx]")]
+        no_match_lines = [line for line in unique_lines if line.startswith("[??]")]
 
-        self.txt_details.see(tk.END)
-        self.txt_details.config(state="disabled")
+        # Recalculate stats based on unique lines
+        self.stats["loaded"] = len(ok_lines)
+        self.stats["errors"] = len(error_lines)
+        self.stats["no_match"] = len(no_match_lines)
 
-        self.stats["subtitles"] += sub_count
-        self.progress_bar.pack_forget()
-        self.lbl_progress_task.pack_forget()
+        lines = ""
+        for line in ok_lines + error_lines + no_match_lines:
+            lines += line.strip() + "\n"
+        self.txt_details.setPlainText(lines)
+
         self.refresh_ui()
+
+    def closeEvent(self, event):
+        self.font_manager.cleanup()
+        event.accept()
 
 
 class AppConfig:
@@ -1332,7 +1358,7 @@ class AppConfig:
             with self.config_file.open("w", encoding="utf-8") as f:
                 json.dump(self._settings, f, indent=4)
         except Exception as e:
-            logger.error(f"Failed to save settings: {e}")
+            logger.exception(f"Failed to save settings: {e}")
 
     def get(self, key: str, default=None):
         """Get a configuration value."""
@@ -1371,26 +1397,11 @@ if __name__ == "__main__":
     logging.basicConfig(
         level=logging.DEBUG,
         format="%(asctime)s [%(levelname)s] %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
     )
-    root = TkinterDnD.Tk()
+    app = QApplication(sys.argv)
 
-    style = ttk.Style()
-    available_themes = style.theme_names()
-    if platform.system() == "Windows":
-        if "winnative" in available_themes:
-            style.theme_use("winnative")
-    elif platform.system() == "Darwin":
-        if "aqua" in available_themes:
-            style.theme_use("aqua")
-    elif platform.system() == "Linux":
-        if "clam" in available_themes:
-            style.theme_use("clam")
-    else:
-        style.theme_use(available_themes[0])
+    sub_path_arg = Path(sys.argv[1]) if len(sys.argv) > 1 else None
+    window = FontLoaderApp(sub_path=sub_path_arg)
+    window.show()
 
-    sub_path_arg = sys.argv[1] if len(sys.argv) > 1 else None
-    sub_path = Path(sub_path_arg) if sub_path_arg else None
-    app = FontLoaderApp(root, sub_path=sub_path)
-
-    root.mainloop()
+    sys.exit(app.exec())
