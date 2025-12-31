@@ -18,7 +18,7 @@ from typing import Any, ClassVar, Optional
 import imohash
 from fontTools.ttLib import TTCollection, TTFont, TTLibFileIsCollectionError
 from platformdirs import user_config_dir
-from PySide6.QtCore import QSize, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import Qt, QThread, QTimer, Signal,QObject
 from PySide6.QtGui import QCursor, QIcon
 
 # PySide6 Imports
@@ -1105,13 +1105,34 @@ class SettingsDialog(QDialog):
         if new_dir:
             self.result_path = new_dir
             self.entry.setText(new_dir)
+class QLogSignal(QObject):
+    log = Signal(str)
 
+
+class QLogHandler(logging.Handler):
+    def __init__(self, emitter):
+        super().__init__()
+        self._emitter = emitter
+
+    @property
+    def emitter(self):
+        return self._emitter
+
+    def emit(self, record):
+        msg = self.format(record)
+        self.emitter.log.emit(msg)
 
 class FontLoaderApp(QMainWindow):
 
     def __init__(self, sub_paths: Optional[list[Path]] = None):
         super().__init__()
         self.setAcceptDrops(True)
+
+        q_log_signal = QLogSignal()
+        h = QLogHandler(q_log_signal)
+        h.setLevel(logging.ERROR)
+        logging.getLogger().addHandler(h)
+        q_log_signal.log.connect(self.error_pop_up)
 
         # Configuration & Managers
         self.app_config = AppConfig()
@@ -1459,6 +1480,10 @@ class FontLoaderApp(QMainWindow):
             # Process the collected files
             logger.debug(f"Dropped files to process: {all_files}")
             self.process_dropped_files(all_files)
+
+    def error_pop_up(self, msg):
+        txt = self.locales.get(self.app_config.get_language())
+        QMessageBox.critical(self, txt["error"], msg)
 
     def hide_progress(self):
         self.progress_bar.hide()
