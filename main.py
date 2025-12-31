@@ -9,6 +9,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import webbrowser
 from multiprocessing import Pool, cpu_count, freeze_support
 from pathlib import Path
@@ -818,29 +819,158 @@ def scan_fonts_in_directory(db: FontDatabase, dir_path: Path, progress_callback=
     return final_stats
 
 
+def extract_mkv_resources(mkv_path, extract_subs=True, extract_fonts=True):
+    """Extracts ASS/SSA subtitles and fonts from an MKV into a temp directory."""
+    # 1. Dependency Check
+    tools = ["mkvmerge", "mkvextract"]
+    for tool in tools:
+        if not shutil.which(tool):
+            logger.error(f"Missing dependency: '{tool}' not found in system PATH.")
+            return None
+
+    mkv_path = Path(mkv_path)
+    if not mkv_path.exists():
+        logger.error(f"Input file not found: {mkv_path}")
+        return None
+
+    # 2. Get Metadata via mkvmerge
+    logger.info(f"Reading metadata from: {mkv_path.name}")
+    try:
+        info_cmd = ["mkvmerge", "-J", str(mkv_path)]
+        result = subprocess.run(
+            info_cmd,
+            capture_output=True,
+            text=True,
+            check=True,
+            encoding="utf-8",
+        )
+        data = json.loads(result.stdout)
+    except (subprocess.CalledProcessError, json.JSONDecodeError) as e:
+        logger.exception("Failed to parse MKV metadata.")
+        return None
+
+    temp_dir = Path(tempfile.mkdtemp(prefix="mkv_extract_"))
+    logger.debug(f"Created temporary directory: {temp_dir}")
+
+    extracted_files = []
+
+    # 3. Identify Subtitle Tracks
+    if extract_subs:
+        track_args = []
+        for track in data.get("tracks", []):
+            codec = track.get("properties", {}).get("codec_id", "").upper()
+            if track.get("type") == "subtitles" and (
+                "S_TEXT/ASS" in codec or "S_TEXT/SSA" in codec
+            ):
+                t_id = track.get("id")
+                ext = ".ass" if "ASS" in codec else ".ssa"
+                name = track.get("properties", {}).get("track_name") or f"track_{t_id}"
+                # Sanitize filename
+                safe_name = "".join(
+                    x for x in name if x.isalnum() or x in "._- "
+                ).strip()
+                out_path = temp_dir / f"{safe_name}{ext}"
+
+                track_args.append(f"{t_id}:{out_path}")
+                extracted_files.append(out_path)
+
+        if track_args:
+            logger.info(f"Found {len(track_args)} subtitle track(s). Extracting...")
+            cmd = ["mkvextract", "tracks", str(mkv_path), *track_args]
+            logger.debug(f"Running command: {' '.join(cmd)}")
+            subprocess.run(cmd, check=True, capture_output=True, encoding="utf-8")
+        else:
+            logger.info("No ASS/SSA subtitle tracks found.")
+
+    # 4. Identify Font Attachments
+    if extract_fonts:
+        attachment_args = []
+        font_mimetypes = [
+            "application/x-truetype-font",
+            "application/vnd.ms-opentype",
+            "application/x-font-ttf",
+            "application/x-font-otf",
+        ]
+
+        for attach in data.get("attachments", []):
+            mime = attach.get("content_type", "").lower()
+            if mime in font_mimetypes or mime.startswith("font/"):
+                a_id = attach.get("id")
+                filename = attach.get("file_name")
+                safe_filename = "".join(
+                    x for x in filename if x.isalnum() or x in "._- "
+                ).strip()
+                out_path = temp_dir / safe_filename
+
+                attachment_args.append(f"{a_id}:{out_path}")
+                extracted_files.append(out_path)
+
+        if attachment_args:
+            logger.info(
+                f"Found {len(attachment_args)} font attachment(s). Extracting..."
+            )
+            cmd = ["mkvextract", "attachments", str(mkv_path), *attachment_args]
+            logger.debug(f"Running command: {' '.join(cmd)}")
+            subprocess.run(cmd, check=True, capture_output=True, encoding="utf-8")
+        else:
+            logger.info("No font attachments found.")
+
+    if not extracted_files:
+        logger.warning("No resources were extracted.")
+        with contextlib.suppress(OSError):
+            temp_dir.rmdir()
+        return None
+
+    logger.info(f"Successfully extracted {len(extracted_files)} files to {temp_dir}")
+    return temp_dir, extracted_files
+
+
 class ExtractWorker(QThread):
     """Background thread for extracting font names from subtitle files."""
 
     progress = Signal(int, int)  # current, total
-    finished = Signal(int, list)  # total_subs, all_fonts
+    finished = Signal(int, list, list)  # total_subs, all_fonts
 
-    def __init__(self, file_list):
+    def __init__(self, file_list: list[Path]):
         super().__init__()
         self.file_list = file_list
 
     def run(self):
         all_fonts = set()
+        all_font_paths = set()
         total_subs = 0
         total_files = len(self.file_list)
 
         for i, file_path in enumerate(self.file_list):
-            if file_path.suffix.lower() in {".ass", ".ssa"}:
+            ext = file_path.suffix.lower()
+
+            if ext in {".ass", ".ssa"}:
                 sub_count, font_list = extract_ass_fonts(file_path)
                 all_fonts.update(font_list)
                 total_subs += sub_count
+            elif ext in {".ttf", ".otf", ".ttc"}:
+                all_font_paths.add(file_path.absolute())
+            elif ext == ".mkv":
+                result = extract_mkv_resources(
+                    file_path, extract_fonts=True, extract_subs=True
+                )
+                if not result:
+                    continue
+                temp_folder, files = result
+                for file in files:
+                    if not isinstance(file, Path):
+                        continue
+                    file_ext = file.suffix.lower()
+                    if file_ext in {".ass", ".ssa"}:
+                        sub_count, font_list = extract_ass_fonts(file)
+                        all_fonts.update(font_list)
+                        total_subs += sub_count
+                    elif file_ext in {".ttf", ".otf", ".ttc"}:
+                        all_font_paths.add((temp_folder / file).absolute())
+
             self.progress.emit(i + 1, total_files)
 
-        self.finished.emit(total_subs, list(all_fonts))
+        self.finished.emit(total_subs, list(all_fonts), list(all_font_paths))
 
 
 class ScanWorker(QThread):
@@ -877,20 +1007,49 @@ class LoadWorker(QThread):
 
     def __init__(
         self,
-        font_list: list,
+        font_list: list[str],
+        font_path_list: list[Path],
         font_manager: SessionFontManager,
         db: FontDatabase,
         font_base_path: Path,
     ):
         super().__init__()
         self.font_list = font_list
+        self.font_path_list = font_path_list
         self.fm = font_manager
         self.db = db
         self.font_base = font_base_path
 
     def run(self):
         log_lines = []
+        # load from paths first
+        loaded_font_from_path = set()
+        for i, font_path in enumerate(self.font_path_list):
+            font_path = font_path.absolute()
+            f_fullname = (
+                FontMetadataExtractor()
+                .db_decode_file(font_path)
+                .get("full_names", [])[0]
+            )
+            f_hash = FontMetadataExtractor().db_decode_file(font_path).get("hash", "")
+            success = self.fm.load_font(font_path, f_hash)
+            if success:
+                log_line = f"[ok] {f_fullname} > {str(font_path)}\n"
+                loaded_font_from_path.add(f_fullname)
+            else:
+                msg = self.fm.status.get(f_hash, {}).get("message", "Error")
+                log_line = f"[xx] {f_fullname} > {str(font_path)} ({msg})\n"
+            log_lines.append(log_line)
+            self.progress.emit(i + 1 + len(self.font_list), font_path.name, log_line)
+        # then load from db
         for i, font in enumerate(self.font_list):
+            # first check if already loaded
+            log_line = ""
+            if font in loaded_font_from_path:
+                # log_line = f"[ok] {font} > Loaded from path\n"
+                # log_lines.append(log_line)
+                self.progress.emit(i + 1, font, log_line)
+                continue
             res = self.db.search_by_font(font)
             log_line = ""
             if res:
@@ -908,6 +1067,7 @@ class LoadWorker(QThread):
 
             log_lines.append(log_line)
             self.progress.emit(i + 1, font, log_line)
+
         self.fm.cache_refresh()
         self.finished.emit(log_lines)
 
@@ -951,8 +1111,6 @@ class FontLoaderApp(QMainWindow):
 
     def __init__(self, sub_paths: Optional[list[Path]] = None):
         super().__init__()
-
-        QTimer.singleShot(5, lambda: self.adjustSize())
         self.setAcceptDrops(True)
 
         # Configuration & Managers
@@ -977,7 +1135,7 @@ class FontLoaderApp(QMainWindow):
             "en_us": {
                 "header": "Finished",
                 "status_1": "{loaded} fonts loaded, {errors} errors, {no_match} unmatched.",
-                "status_2": "Index: {index_fonts} fonts, {index_names} names; {subtitles} subtitles.",
+                "status_2": "Index: {index_fonts} fonts, {index_names} names; {subtitles} subtitles, {imported_fonts} imported fonts.",
                 "btn_menu": "Menu",
                 "btn_details": "Details",
                 "btn_close": "Close",
@@ -986,6 +1144,7 @@ class FontLoaderApp(QMainWindow):
                 "menu_font_base": "Set Font Base",
                 "select_font_base": "Select Font Base Directory",
                 "menu_export": "Export Fonts",
+                "menu_mkv": "Extract from MKV",
                 "menu_help": "Help",
                 "menu_lang": "Language",
                 "menu_clear": "Clear Settings",
@@ -1002,7 +1161,7 @@ class FontLoaderApp(QMainWindow):
             "zh_tw": {
                 "header": "完成",
                 "status_1": "{loaded} 個字型載入成功，{errors} 個出錯，{no_match} 個無匹配。",
-                "status_2": "索引中有 {index_fonts} 個字型，{index_names} 種名稱；當前共 {subtitles} 個字幕。",
+                "status_2": "索引中有 {index_fonts} 個字型，{index_names} 種名稱；當前共 {subtitles} 個字幕，{imported_fonts}個匯入字型。",
                 "btn_menu": "選單",
                 "btn_details": "詳情",
                 "btn_close": "關閉",
@@ -1011,6 +1170,7 @@ class FontLoaderApp(QMainWindow):
                 "menu_font_base": "設定字型庫",
                 "select_font_base": "設定字型庫資料夾",
                 "menu_export": "匯出字型",
+                "menu_mkv": "從 MKV 提取",
                 "menu_help": "說明",
                 "menu_clear": "清除設定",
                 "menu_lang": "語言",
@@ -1027,7 +1187,7 @@ class FontLoaderApp(QMainWindow):
             "zh_cn": {
                 "header": "完成",
                 "status_1": "{loaded} 个字体加载成功，{errors} 个出错，{no_match} 个无匹配。",
-                "status_2": "索引中有 {index_fonts} 个字体，{index_names} 种名称；当前共 {subtitles} 个字幕。",
+                "status_2": "索引中有 {index_fonts} 个字体，{index_names} 种名称；当前共 {subtitles} 个字幕，{imported_fonts}个导入字体。",
                 "btn_menu": "菜单",
                 "btn_details": "详情",
                 "btn_close": "关闭",
@@ -1036,6 +1196,7 @@ class FontLoaderApp(QMainWindow):
                 "menu_font_base": "设置字体库",
                 "select_font_base": "设置字体库文件夹",
                 "menu_export": "导出字体",
+                "menu_mkv": "从MKV提取",
                 "menu_help": "帮助",
                 "menu_clear": "清除设置",
                 "menu_lang": "语言",
@@ -1058,6 +1219,7 @@ class FontLoaderApp(QMainWindow):
             "index_fonts": 0,
             "index_names": 0,
             "subtitles": 0,
+            "imported_fonts": 0,
         }
         self.init_ui()
         self.refresh_ui()
@@ -1146,10 +1308,7 @@ class FontLoaderApp(QMainWindow):
 
     def toggle_details(self):
         if self.txt_details.isVisible():
-            self.txt_details.hide()
-            if self.centralWidget().layout():
-                self.centralWidget().layout().activate()
-            self.adjustSize()
+            self.hide_txt_details()
         else:
             self.txt_details.show()
 
@@ -1165,6 +1324,13 @@ class FontLoaderApp(QMainWindow):
 
         act_export = menu.addAction(txt["menu_export"])
         act_export.triggered.connect(self.action_export)
+
+        act_mkv_checkbox = menu.addAction(txt["menu_mkv"])
+        act_mkv_checkbox.setCheckable(True)
+        act_mkv_checkbox.setChecked(self.app_config.get("mkv_extraction", False))
+        act_mkv_checkbox.triggered.connect(
+            lambda: self.app_config.set("mkv_extraction", act_mkv_checkbox.isChecked())
+        )
 
         menu.addSeparator()
         lang_menu = menu.addMenu(txt["menu_lang"])
@@ -1214,12 +1380,8 @@ class FontLoaderApp(QMainWindow):
         self.lbl_progress_task.setText(task_text)
 
     def _on_scan_finished(self, stats):
-        self.progress_bar.hide()
-        self.lbl_progress_task.hide()
+        self.hide_progress()
         self.btn_menu.setEnabled(True)
-        if self.centralWidget().layout():
-            self.centralWidget().layout().activate()
-        self.adjustSize()
         self.refresh_ui()
 
         txt = self.locales.get(self.app_config.get_language())
@@ -1275,21 +1437,43 @@ class FontLoaderApp(QMainWindow):
 
     def dropEvent(self, event):
         files = [Path(u.toLocalFile()) for u in event.mimeData().urls()]
-        if files:
-            # Collect all subtitle files from dropped items
-            all_subtitle_files = []
-            for f in files:
-                if f.is_dir():
-                    # Use rglob to find all .ass and .ssa files recursively
-                    all_subtitle_files.extend(f.rglob("*.[aA][sS][sS]"))
-                    all_subtitle_files.extend(f.rglob("*.[sS][sS][aA]"))
-                elif f.is_file() and f.suffix.lower() in {".ass", ".ssa"}:
-                    all_subtitle_files.append(f)
+        if not files:
+            return
 
-            if all_subtitle_files:
-                self.process_dropped_files(all_subtitle_files)
+        # Determine valid extensions based on mkv_extraction setting
+        valid_exts = {".ass", ".ssa", ".ttf", ".otf", ".ttc"}
+        if self.app_config.get("mkv_extraction", False):
+            valid_exts.add(".mkv")
 
-    def process_dropped_files(self, file_list):
+        # Collect all valid files from dropped items
+        all_files = []
+        for f in files:
+            if f.is_dir():
+                for ext in valid_exts:
+                    all_files.extend(f.rglob(f"*{ext}"))
+                    all_files.extend(f.rglob(f"*{ext.upper()}"))
+            elif f.is_file() and f.suffix.lower() in valid_exts:
+                all_files.append(f)
+
+        if all_files:
+            # Process the collected files
+            logger.debug(f"Dropped files to process: {all_files}")
+            self.process_dropped_files(all_files)
+
+    def hide_progress(self):
+        self.progress_bar.hide()
+        self.lbl_progress_task.hide()
+        if self.centralWidget().layout():
+            self.centralWidget().layout().activate()
+        self.adjustSize()
+
+    def hide_txt_details(self):
+        self.txt_details.hide()
+        if self.centralWidget().layout():
+            self.centralWidget().layout().activate()
+        self.adjustSize()
+
+    def process_dropped_files(self, file_list: list[Path]):
         """Process multiple subtitle files using a background worker."""
         if not file_list:
             return
@@ -1308,20 +1492,29 @@ class FontLoaderApp(QMainWindow):
         self.extract_thread.finished.connect(self._on_extract_finished)
         self.extract_thread.start()
 
-    def _on_extract_finished(self, total_subs, font_list):
-        if not font_list:
-            self.progress_bar.hide()
-            self.lbl_progress_task.hide()
+    def _on_extract_finished(
+        self, total_subs: int, font_list: list[str], font_file_list: list[Path]
+    ):
+        if not font_list and not font_file_list:
+            self.hide_progress()
             return
 
+        logger.debug("Extracted fonts: %s", font_list)
+        logger.debug("Extracted font files: %s", font_file_list)
+
         self.stats["subtitles"] += total_subs
+        self.stats["imported_fonts"] += len(font_file_list)
 
         # Transition to Loading phase
-        self.progress_bar.setRange(0, len(font_list))
+        self.progress_bar.setRange(0, len(font_list) + len(font_file_list))
         self.progress_bar.setValue(0)
 
         self.load_thread = LoadWorker(
-            font_list, self.font_manager, self.db, self.app_config.get_font_base_path()
+            font_list,
+            font_file_list,
+            self.font_manager,
+            self.db,
+            self.app_config.get_font_base_path(),
         )
         self.load_thread.progress.connect(self._on_load_progress)
         self.load_thread.finished.connect(self._on_load_finished)
@@ -1335,15 +1528,13 @@ class FontLoaderApp(QMainWindow):
             self.stats["loaded"] += 1
         elif "[xx]" in log_line:
             self.stats["errors"] += 1
-        else:
+        elif "[??]" in log_line:
             self.stats["no_match"] += 1
+        else:
+            pass
 
     def _on_load_finished(self, log_lines):
-        self.progress_bar.hide()
-        self.lbl_progress_task.hide()
-        if self.centralWidget().layout():
-            self.centralWidget().layout().activate()
-        self.adjustSize()
+        self.hide_progress()
 
         previously_loaded = self.txt_details.toPlainText().splitlines()
         all_lines = previously_loaded + [line.strip() for line in log_lines]
@@ -1386,6 +1577,12 @@ class AppConfig:
 
     DB_NAME = "FontLoaderSubRe.db"
 
+    DEFAULT_SETTINGS = {
+        "font_base_path": str(Path.cwd()),
+        "ui_language": "en_us",
+        "mkv_extraction": False,
+    }
+
     def __init__(self):
 
         self.config_dir = Path(user_config_dir(self.APP_NAME, self.APP_AUTHOR))
@@ -1402,10 +1599,7 @@ class AppConfig:
             except Exception:
                 logger.warning("Failed to load settings, using defaults")
 
-        return {
-            "font_base_path": str(Path.cwd()),
-            "ui_language": "en_us",
-        }
+        return self.DEFAULT_SETTINGS.copy()
 
     def _save_settings(self):
         """Persist settings to disk."""
@@ -1446,10 +1640,7 @@ class AppConfig:
 
     def clear(self):
         """Clear all settings"""
-        self._settings = {
-            "font_base_path": str(Path.cwd()),
-            "ui_language": "en_us",
-        }
+        self._settings = self.DEFAULT_SETTINGS.copy()
         self._save_settings()
 
 

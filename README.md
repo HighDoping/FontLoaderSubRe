@@ -12,3 +12,8 @@ Drag-and-drop ASS/SSA subtitles and it will load corresponding font files from a
 ## Changes
 
 * Redesigned with Python and PySide6.
+
+### New Features
+
+* Extract fonts and subtitles from MKV (needs to install [MKVToolNix](https://mkvtoolnix.download/downloads.html)).
+* Load font files.
