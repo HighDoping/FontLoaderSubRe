@@ -6,7 +6,7 @@ from multiprocessing import freeze_support
 from pathlib import Path
 
 try:
-    from main import FontDatabase, scan_fonts_in_directory
+    from utils import FontDatabase, scan_fonts_in_directory
 except ImportError:
     print("Error: Could not find main.py in the current directory.")
     sys.exit(1)
