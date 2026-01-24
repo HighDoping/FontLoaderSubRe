@@ -685,7 +685,7 @@ def _worker_process_font(args):
         if "error" in data:
             return None
         # Make path relative string here to save main thread CPU
-        rel_path = str(path.relative_to(dir_path))
+        rel_path = path.relative_to(dir_path).as_posix()
         data["relative_path"] = rel_path
         return data
     except Exception:

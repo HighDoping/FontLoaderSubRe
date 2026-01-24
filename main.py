@@ -41,6 +41,7 @@ from utils import (
     scan_fonts_in_directory,
 )
 
+logger = logging.getLogger(__name__)
 
 class ExtractWorker(QThread):
     """Background thread for extracting font names from subtitle files."""
@@ -142,7 +143,7 @@ class LoadWorker(QThread):
         # load from paths first
         loaded_font_from_path = set()
         for i, font_path in enumerate(self.font_path_list):
-            font_path = font_path.absolute()
+            font_path = Path(font_path.absolute().as_posix())
             f_fullname = (
                 FontMetadataExtractor()
                 .db_decode_file(font_path)
@@ -171,7 +172,11 @@ class LoadWorker(QThread):
             log_line = ""
             if res:
                 relative_path_str = res[0][0]
-                f_path = (Path(self.font_base) / Path(relative_path_str)).absolute()
+                f_path = Path(
+                    (Path(self.font_base) / Path(relative_path_str))
+                    .absolute()
+                    .as_posix()
+                )
                 f_hash = res[0][1]
                 success = self.fm.load_font(f_path, f_hash)
                 if success:
@@ -799,7 +804,7 @@ if __name__ == "__main__":
 
     sub_paths = [Path(arg) for arg in sys.argv[1:]] if len(sys.argv) > 1 else []
     window = FontLoaderApp(sub_paths=sub_paths)
-    window.setWindowTitle("FontLoaderSubRe 0.2.0")
+    window.setWindowTitle("FontLoaderSubRe 0.2.1")
 
     # add icon
     if platform.system() == "Darwin":

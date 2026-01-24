@@ -1,6 +1,6 @@
 [project]
 name = "FontLoaderSubRe"
-version = "0.2.0"
+version = "0.2.1"
 description = "Multi-platform FontLoaderSub Rewritten in Python"
 readme = "README.md"
 requires-python = ">=3.12"

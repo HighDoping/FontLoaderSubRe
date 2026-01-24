@@ -5,7 +5,7 @@ NAME = "FontLoaderSubRe"
 AUTHOR = "HighDoping"
 DESCRIPTION = "Load missing fonts for ASS/SSA subtitles from huge font collections."
 COPYRIGHT = "Copyright (c) 2025, HighDoping"
-VERSION_BASE = "0.2.0"
+VERSION_BASE = "0.2.1"
 
 
 nuitka_commands = [
