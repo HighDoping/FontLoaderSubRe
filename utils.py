@@ -573,16 +573,38 @@ class SessionFontManager:
         remove_font_resource_w.restype = ctypes.c_int
         return remove_font_resource_w(str(path)) != 0
 
+    def _refresh_windows(self):
+        try:
+            HWND_BROADCAST = 0xFFFF
+            WM_FONTCHANGE = 0x001D
+            SMTO_ABORTIFHUNG = 0x0002
+            result = ctypes.windll.user32.SendMessageTimeoutW(
+                HWND_BROADCAST,
+                WM_FONTCHANGE,
+                0,
+                0,
+                SMTO_ABORTIFHUNG,
+                1000,
+                None,
+            )
+            if result == 0:
+                logger.warning("Font change message timed out.")
+            else:
+                logger.debug("Font change message sent successfully.")
+        except Exception as e:
+            logger.error("Error refreshing Windows font cache: %s", e)
+
     def _unload_unix(self, path: Path) -> bool:
         try:
-            if path.exists():
-                path.unlink()
+            path.unlink(missing_ok=True)
             return True
         except Exception as e:
             logger.error("Error removing font %s: %s", path, e)
             return False
 
     def cache_refresh(self):
+        if self.current_os == "Windows":
+            self._refresh_windows()
         if self.current_os == "Linux":
             try:
                 subprocess.run(["fc-cache", "-f"], check=True, capture_output=True)

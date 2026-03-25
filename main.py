@@ -43,6 +43,7 @@ from utils import (
 
 logger = logging.getLogger(__name__)
 
+
 class ExtractWorker(QThread):
     """Background thread for extracting font names from subtitle files."""
 
@@ -143,6 +144,7 @@ class LoadWorker(QThread):
         # load from paths first
         loaded_font_from_path = set()
         for i, font_path in enumerate(self.font_path_list):
+            self.progress.emit(i + 1 + len(self.font_list), font_path.name, "")
             font_path = Path(font_path.absolute().as_posix())
             f_fullname = (
                 FontMetadataExtractor()
@@ -161,15 +163,13 @@ class LoadWorker(QThread):
             self.progress.emit(i + 1 + len(self.font_list), font_path.name, log_line)
         # then load from db
         for i, font in enumerate(self.font_list):
+            self.progress.emit(i + 1, font, "")
+
             # first check if already loaded
-            log_line = ""
             if font in loaded_font_from_path:
-                # log_line = f"[ok] {font} > Loaded from path\n"
-                # log_lines.append(log_line)
-                self.progress.emit(i + 1, font, log_line)
                 continue
+
             res = self.db.search_by_font(font)
-            log_line = ""
             if res:
                 relative_path_str = res[0][0]
                 f_path = Path(
@@ -190,6 +190,11 @@ class LoadWorker(QThread):
             log_lines.append(log_line)
             self.progress.emit(i + 1, font, log_line)
 
+        self.progress.emit(
+            len(self.font_list) + len(self.font_path_list),
+            "",
+            "cache_refresh",
+        )
         self.fm.cache_refresh()
         self.finished.emit(log_lines)
 
@@ -222,11 +227,15 @@ class SettingsDialog(QDialog):
 
     def select_dir(self):
         new_dir = QFileDialog.getExistingDirectory(
-            self, self.locales["select_font_base"], str(self.result_path)
+            self,
+            self.locales["select_font_base"],
+            str(self.result_path),
         )
         if new_dir:
             self.result_path = new_dir
             self.entry.setText(new_dir)
+
+
 class QLogSignal(QObject):
     log = Signal(str)
 
@@ -243,6 +252,7 @@ class QLogHandler(logging.Handler):
     def emit(self, record):
         msg = self.format(record)
         self.emitter.log.emit(msg)
+
 
 class FontLoaderApp(QMainWindow):
 
@@ -669,7 +679,12 @@ class FontLoaderApp(QMainWindow):
 
     def _on_load_progress(self, idx, font_name, log_line):
         self.progress_bar.setValue(idx)
-        self.lbl_progress_task.setText(f"Loading: {font_name}")
+        if log_line == "":
+            self.lbl_progress_task.setText(f"Loading: {font_name}")
+        if log_line == "cache_refresh":
+            self.lbl_progress_task.setText(f"Refreshing font cache...")
+        else:
+            self.lbl_progress_task.setText(f"Loaded: {font_name}")
 
         if "[ok]" in log_line:
             self.stats["loaded"] += 1
@@ -677,8 +692,7 @@ class FontLoaderApp(QMainWindow):
             self.stats["errors"] += 1
         elif "[??]" in log_line:
             self.stats["no_match"] += 1
-        else:
-            pass
+        self.refresh_ui()
 
     def _on_load_finished(self, log_lines):
         self.hide_progress()
@@ -712,8 +726,36 @@ class FontLoaderApp(QMainWindow):
         self.refresh_ui()
 
     def closeEvent(self, event):
-        self.font_manager.cleanup()
-        event.accept()
+        # Prevent re-entry loop
+        if getattr(self, "_closing", False):
+            event.accept()
+            return
+
+        self._closing = True
+
+        self.lbl_progress_task.setText("Exiting...")
+        self.lbl_progress_task.show()
+
+        self.worker = CacheRefreshWorker(self.font_manager)
+        self.worker.finished.connect(self._on_close_ready)
+        self.worker.start()
+
+        event.ignore()
+
+    def _on_close_ready(self):
+        self.close()  # triggers closeEvent again
+
+
+class CacheRefreshWorker(QThread):
+    finished = Signal()
+
+    def __init__(self, font_manager):
+        super().__init__()
+        self.font_manager = font_manager
+
+    def run(self):
+        self.font_manager.cache_refresh()
+        self.finished.emit()
 
 
 class AppConfig:
