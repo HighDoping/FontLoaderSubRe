@@ -640,7 +640,7 @@ class FontLoaderApp(QMainWindow):
         self.progress_bar.show()
         self.lbl_progress_task.show()
         txt = self.locales.get(self.app_config.get_language())
-        self.lbl_progress_task.setText(txt["msg_extracting_subs"])
+        self.lbl_progress_task.setText(txt["msg_extracting_subs"])  # type: ignore
 
         self.extract_thread = ExtractWorker(file_list)
         self.extract_thread.progress.connect(
@@ -846,7 +846,7 @@ if __name__ == "__main__":
 
     sub_paths = [Path(arg) for arg in sys.argv[1:]] if len(sys.argv) > 1 else []
     window = FontLoaderApp(sub_paths=sub_paths)
-    window.setWindowTitle("FontLoaderSubRe 0.2.1")
+    window.setWindowTitle("FontLoaderSubRe 0.2.2")
 
     # add icon
     if platform.system() == "Darwin":

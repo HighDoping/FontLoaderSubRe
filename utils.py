@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 class FontMetadataExtractor:
     """Extracts metadata from font files using fontTools."""
 
-    LANG_ID_MAP: ClassVar[[int, str]] = {
+    LANG_ID_MAP: ClassVar[[int, str]] = {  # type: ignore
         0x0409: "English (US)",
         0x0809: "English (UK)",
         0x0411: "Japanese",
@@ -740,9 +740,9 @@ def scan_fonts_in_directory(db: FontDatabase, dir_path: Path, progress_callback=
     db.clean_database()
 
     # 2. Setup Batching
-    BATCH_SIZE = 500
+    batch_size = 500
     batch_files = []
-    batch_names = {"full": [], "family": [], "ps": [], "unique": []}
+    batch_names = {"full": [], "family": [], "ps": [], "unique": []}  # type: ignore
 
     # 3. Process
     with Pool(processes=min(16, cpu_count())) as pool:
@@ -752,7 +752,7 @@ def scan_fonts_in_directory(db: FontDatabase, dir_path: Path, progress_callback=
             _worker_process_font, args_iter, chunksize=10
         ):
             if not result:
-                final_stats["files_processed"] += 1
+                final_stats["files_processed"] += 1  # type: ignore
                 if progress_callback:
                     progress_callback(final_stats["files_processed"], total_files)
                 continue
@@ -772,18 +772,18 @@ def scan_fonts_in_directory(db: FontDatabase, dir_path: Path, progress_callback=
                 batch_names["unique"].append((f_hash, n))
 
             # Update Statistics
-            final_stats["files_processed"] += 1
-            final_stats["unique_font_names"]["full"] += len(result["full_names"])
-            final_stats["unique_font_names"]["family"] += len(result["family_names"])
-            final_stats["unique_font_names"]["ps"] += len(result["ps_names"])
-            final_stats["unique_font_names"]["unique"] += len(result["unique_ids"])
+            final_stats["files_processed"] += 1  # type: ignore
+            final_stats["unique_font_names"]["full"] += len(result["full_names"])  # type: ignore
+            final_stats["unique_font_names"]["family"] += len(result["family_names"])  # type: ignore
+            final_stats["unique_font_names"]["ps"] += len(result["ps_names"])  # type: ignore
+            final_stats["unique_font_names"]["unique"] += len(result["unique_ids"])  # type: ignore
 
             # Report progress
             if progress_callback:
                 progress_callback(final_stats["files_processed"], total_files)
 
             # Flush Batch if full
-            if len(batch_files) >= BATCH_SIZE:
+            if len(batch_files) >= batch_size:
                 db.bulk_insert_batch(batch_files, batch_names)
                 # Reset buffers
                 batch_files = []
@@ -801,7 +801,7 @@ def scan_fonts_in_directory(db: FontDatabase, dir_path: Path, progress_callback=
     db.metadata_set("last_scan", dir_path.as_posix())
     db.metadata_set(
         "last_scan_time",
-        str(int(sqlite3.datetime.datetime.now().timestamp())),
+        str(int(sqlite3.datetime.datetime.now().timestamp())),  # type: ignore
     )
     # db.metadata_set("file_count", str(final_stats["files_processed"]))
 

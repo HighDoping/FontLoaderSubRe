@@ -4,8 +4,8 @@ import sys
 NAME = "FontLoaderSubRe"
 AUTHOR = "HighDoping"
 DESCRIPTION = "Load missing fonts for ASS/SSA subtitles from huge font collections."
-COPYRIGHT = "Copyright (c) 2025, HighDoping"
-VERSION_BASE = "0.2.1"
+COPYRIGHT = "Copyright (c) 2025 - 2026, HighDoping"
+VERSION_BASE = "0.2.2"
 
 
 nuitka_commands = [
