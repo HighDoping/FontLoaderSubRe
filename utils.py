@@ -3,6 +3,7 @@ import ctypes
 import json
 import logging
 import platform
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -632,7 +633,7 @@ class SessionFontManager:
 def extract_ass_fonts(path: Path):
     """Accepts a filepath to a single .ass file or a dirpath containing .ass files.
 
-    Returns a list of unique font names found in the [V4+ Styles] / [V4 Styles] sections.
+    Returns a list of unique font names.
     """
     fonts = set()
     p = Path(path)
@@ -660,40 +661,40 @@ def extract_ass_fonts(path: Path):
             except UnicodeError:
                 continue
 
-        in_styles_section = False
+        section = None
         font_name_index = -1
 
         for line in lines:
             line = line.strip()
 
-            # Enter Styles section
-            if line in {"[V4+ Styles]", "[V4 Styles]"}:
-                in_styles_section = True
+            # Section detection
+            if line.startswith("["):
+                if line in {"[V4+ Styles]", "[V4 Styles]"}:
+                    section = "styles"
+                elif line == "[Events]":
+                    section = "events"
+                else:
+                    section = None
                 continue
 
-            # Exit Styles section when a new non-V4 section starts
-            if (
-                in_styles_section
-                and line.startswith("[")
-                and not line.startswith("[V4")
-            ):
-                break
+            if section == "styles":
+                # Parse Format line to find "Fontname" index
+                if line.startswith("Format:"):
+                    format_headers = [x.strip() for x in line[7:].split(",")]
+                    try:
+                        font_name_index = format_headers.index("Fontname")
+                    except ValueError:
+                        font_name_index = 1  # fallback
+                # Parse Style lines
+                elif line.startswith("Style:") and font_name_index != -1:
+                    parts = line[6:].split(",")
+                    if len(parts) > font_name_index:
+                        fonts.add(parts[font_name_index].strip())
 
-            if not in_styles_section:
-                continue
-
-            # Parse Format line to find "Fontname" index
-            if line.startswith("Format:"):
-                format_headers = [x.strip() for x in line[7:].split(",")]
-                try:
-                    font_name_index = format_headers.index("Fontname")
-                except ValueError:
-                    font_name_index = 1  # fallback
-            # Parse Style lines
-            elif line.startswith("Style:") and font_name_index != -1:
-                parts = line[6:].split(",")
-                if len(parts) > font_name_index:
-                    fonts.add(parts[font_name_index].strip())
+            elif section == "events" and line.startswith("Dialogue:"):
+                # Parse Dialogue lines for inline \fn font override tags
+                for match in re.finditer(r"\\fn([^\\}]+)", line):
+                    fonts.add(match.group(1).strip())
 
     return len(files), list(fonts)
 
