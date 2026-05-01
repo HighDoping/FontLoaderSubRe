@@ -5,9 +5,11 @@
 package main
 
 import (
+	_ "embed"
 	"os"
 	"path/filepath"
 
+	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 
 	"FontLoaderSubRe/internal/config"
@@ -15,6 +17,9 @@ import (
 	"FontLoaderSubRe/internal/session"
 	"FontLoaderSubRe/ui"
 )
+
+//go:embed icon.png
+var iconBytes []byte
 
 func main() {
 	cfg, err := config.Load()
@@ -37,6 +42,7 @@ func main() {
 	mgr := session.New()
 
 	a := app.NewWithID("com.highdoping.fontloadersubr")
+	a.SetIcon(fyne.NewStaticResource("icon.png", iconBytes))
 
 	uiApp := ui.New(a, cfg, database, mgr)
 

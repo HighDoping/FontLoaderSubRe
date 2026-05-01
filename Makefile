@@ -5,8 +5,11 @@ BINARY_CLI    := Indexer
 CMD_GUI       := ./cmd/fontloader
 CMD_CLI       := ./cmd/cli_indexer
 FYNE          := $(shell go env GOPATH)/bin/fyne
+RSRC          := $(shell go env GOPATH)/bin/rsrc
+ICON          := resources/icon.ico
+SYSO          := $(CMD_GUI)/resource.syso
 
-# ── macOS ──────────────────────────────────────────────────────────────────────
+# ── macOS ─────────────────────────────────────────────────────────────────────
 build-unix: clean $(BINARY_GUI) $(BINARY_CLI)
 
 $(BINARY_GUI):
@@ -19,20 +22,25 @@ $(BINARY_CLI):
 bundle-mac:
 	cd $(CMD_GUI) && $(FYNE) package --os darwin
 
-# ── CLI only ───────────────────────────────────────────────────────────────────
+# ── CLI only ──────────────────────────────────────────────────────────────────
 build-cli:
 	go build -o $(BINARY_CLI) $(CMD_CLI)
 
-# ── Windows cross-compile (requires fyne-cross or GOOS override) ──────────────
-build-win:
-	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o $(BINARY_GUI).exe $(CMD_GUI)
-	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o $(BINARY_CLI).exe $(CMD_CLI)
+# ── Windows  ──────────────────────────────────────────────────────────────────
+build-win: $(SYSO)
+	go build -ldflags="-H windowsgui" -o $(BINARY_GUI).exe $(CMD_GUI)
+	go build -o $(BINARY_CLI).exe $(CMD_CLI)
+#rm -f $(SYSO)
 
-# ── All ────────────────────────────────────────────────────────────────────────
+$(SYSO): $(ICON)
+	$(RSRC) -ico $(ICON) -o $(SYSO)
+
+# ── All ───────────────────────────────────────────────────────────────────────
 all: build-unix build-cli
 
-# ── Clean ──────────────────────────────────────────────────────────────────────
+# ── Clean ─────────────────────────────────────────────────────────────────────
 clean:
 	rm -f $(BINARY_GUI) $(BINARY_GUI).exe
 	rm -f $(BINARY_CLI) $(BINARY_CLI).exe
+	rm -f $(SYSO)
 	rm -rf FontLoaderSubRe.app
