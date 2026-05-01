@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	_ "modernc.org/sqlite" // register "sqlite" driver
+	_ "github.com/mattn/go-sqlite3" // register "sqlite3" driver (CGO)
 )
 
 // DB wraps the SQLite connection and exposes the operations needed by the app.
@@ -18,7 +18,7 @@ type DB struct {
 
 // Open opens (or creates) the database at the given path.
 func Open(path string) (*DB, error) {
-	conn, err := sql.Open("sqlite", path)
+	conn, err := sql.Open("sqlite3", path)
 	if err != nil {
 		return nil, err
 	}
