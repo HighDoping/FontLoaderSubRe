@@ -2,8 +2,8 @@
 FontLoaderSubRe
 FontLoaderSubRe.exe
 FontLoaderSubRe.app
-cli_indexer
-cli_indexer.exe
+Indexer
+Indexer.exe
 *.zip
 
 # Database

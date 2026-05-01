@@ -1,7 +1,7 @@
 .PHONY: all build-unix build-cli build-win clean
 
 BINARY_GUI    := FontLoaderSubRe
-BINARY_CLI    := cli_indexer
+BINARY_CLI    := Indexer
 CMD_GUI       := ./cmd/fontloader
 CMD_CLI       := ./cmd/cli_indexer
 FYNE          := $(shell go env GOPATH)/bin/fyne
