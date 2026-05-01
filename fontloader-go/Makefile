@@ -4,9 +4,10 @@ BINARY_GUI    := FontLoaderSubRe
 BINARY_CLI    := cli_indexer
 CMD_GUI       := ./cmd/fontloader
 CMD_CLI       := ./cmd/cli_indexer
+FYNE          := $(shell go env GOPATH)/bin/fyne
 
 # ── macOS ──────────────────────────────────────────────────────────────────────
-build-mac: $(BINARY_GUI) $(BINARY_CLI)
+build-mac: clean $(BINARY_GUI) $(BINARY_CLI)
 
 $(BINARY_GUI):
 	go build -o $(BINARY_GUI) $(CMD_GUI)
@@ -16,7 +17,7 @@ $(BINARY_CLI):
 
 # Optional: package as .app bundle using fyne tool
 bundle-mac:
-	fyne package -os darwin -name FontLoaderSubRe -appID com.highdoping.fontloadersubre -src $(CMD_GUI)
+	cd $(CMD_GUI) && $(FYNE) package --os darwin
 
 # ── CLI only ───────────────────────────────────────────────────────────────────
 build-cli:
