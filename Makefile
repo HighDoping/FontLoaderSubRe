@@ -20,7 +20,7 @@ $(BINARY_CLI):
 
 # Optional: package as .app bundle using fyne tool
 bundle-mac:
-	cd $(CMD_GUI) && $(FYNE) package --os darwin
+	cd $(CMD_GUI) && $(FYNE) package --os darwin --release
 
 # ── CLI only ──────────────────────────────────────────────────────────────────
 build-cli:
@@ -34,7 +34,8 @@ build-win: $(SYSO)
 
 $(SYSO): $(ICON)
 	$(RSRC) -ico $(ICON) -o $(SYSO)
-
+bundle-win:
+	cd $(CMD_GUI) && $(FYNE) package --os windows --release
 # ── All ───────────────────────────────────────────────────────────────────────
 all: build-unix build-cli
 

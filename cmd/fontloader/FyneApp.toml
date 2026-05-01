@@ -4,5 +4,5 @@ Website = "https://github.com/highdoping/FontLoaderSubRe"
 Icon = "icon.png"
 Name = "FontLoaderSubRe"
 ID = "com.highdoping.fontloadersubre"
-Version = "0.2.2"
-Build = 4
+Version = "0.3.0"
+Build = 0

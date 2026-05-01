@@ -12,7 +12,7 @@ import (
 const (
 	AppName = "FontLoaderSubRe"
 	DBName  = "FontLoaderSubRe.db"
-	Version = "0.2.2"
+	Version = "0.3.0"
 )
 
 // Config holds all persisted application settings.
