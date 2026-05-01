@@ -8,10 +8,10 @@ import (
 
 	"fyne.io/fyne/v2/dialog"
 
-	"fontloader-go/internal/fontmeta"
-	"fontloader-go/internal/mkv"
-	"fontloader-go/internal/scanner"
-	"fontloader-go/internal/subtitle"
+	"FontLoaderSubRe/internal/fontmeta"
+	"FontLoaderSubRe/internal/mkv"
+	"FontLoaderSubRe/internal/scanner"
+	"FontLoaderSubRe/internal/subtitle"
 )
 
 // runExtractWorker extracts font names/paths from the provided file list,

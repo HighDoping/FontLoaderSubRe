@@ -1,19 +1,28 @@
-# Python-generated files
-__pycache__/
-*.py[oc]
-build/
-dist/
-wheels/
-*.egg-info
-
-# Virtual environments
-.venv
-FontLoaderSubRe.db
-dev/
-main.dist/
-main.app
-FontLoaderSubRe.app
-*.exe
-*.zip
-cli_indexer
+# Go build artefacts
 FontLoaderSubRe
+FontLoaderSubRe.exe
+FontLoaderSubRe.app
+cli_indexer
+cli_indexer.exe
+*.zip
+
+# Database
+FontLoaderSubRe.db
+
+# Misc
+dev/
+.DS_Store
+
+# Python (legacy) — generated files
+python/__pycache__/
+python/*.py[oc]
+python/build/
+python/dist/
+python/wheels/
+python/*.egg-info
+python/main.dist/
+python/main.build/
+python/main.app
+python/.venv
+python/.mypy_cache/
+*.exe

@@ -1,4 +1,4 @@
-.PHONY: all build-mac build-cli build-win clean
+.PHONY: all build-unix build-cli build-win clean
 
 BINARY_GUI    := FontLoaderSubRe
 BINARY_CLI    := cli_indexer
@@ -7,7 +7,7 @@ CMD_CLI       := ./cmd/cli_indexer
 FYNE          := $(shell go env GOPATH)/bin/fyne
 
 # ── macOS ──────────────────────────────────────────────────────────────────────
-build-mac: clean $(BINARY_GUI) $(BINARY_CLI)
+build-unix: clean $(BINARY_GUI) $(BINARY_CLI)
 
 $(BINARY_GUI):
 	go build -o $(BINARY_GUI) $(CMD_GUI)
@@ -28,18 +28,8 @@ build-win:
 	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o $(BINARY_GUI).exe $(CMD_GUI)
 	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o $(BINARY_CLI).exe $(CMD_CLI)
 
-# ── Tests & Hygiene ────────────────────────────────────────────────────────────
-test:
-	go test ./...
-
-vet:
-	go vet ./...
-
-tidy:
-	go mod tidy
-
 # ── All ────────────────────────────────────────────────────────────────────────
-all: build-mac build-cli
+all: build-unix build-cli
 
 # ── Clean ──────────────────────────────────────────────────────────────────────
 clean:

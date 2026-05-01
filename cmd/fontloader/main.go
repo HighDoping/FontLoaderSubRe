@@ -10,10 +10,10 @@ import (
 
 	"fyne.io/fyne/v2/app"
 
-	"fontloader-go/internal/config"
-	"fontloader-go/internal/db"
-	"fontloader-go/internal/session"
-	"fontloader-go/ui"
+	"FontLoaderSubRe/internal/config"
+	"FontLoaderSubRe/internal/db"
+	"FontLoaderSubRe/internal/session"
+	"FontLoaderSubRe/ui"
 )
 
 func main() {

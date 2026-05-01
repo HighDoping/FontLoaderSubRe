@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"fontloader-go/internal/db"
-	"fontloader-go/internal/fontmeta"
+	"FontLoaderSubRe/internal/db"
+	"FontLoaderSubRe/internal/fontmeta"
 )
 
 // Stats holds the results of a scan operation.

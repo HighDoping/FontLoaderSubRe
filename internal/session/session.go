@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"fontloader-go/internal/loader"
+	"FontLoaderSubRe/internal/loader"
 )
 
 // Status constants for a font entry.

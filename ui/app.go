@@ -17,10 +17,10 @@ import (
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/widget"
 
-	"fontloader-go/internal/config"
-	"fontloader-go/internal/db"
-	"fontloader-go/internal/i18n"
-	"fontloader-go/internal/session"
+	"FontLoaderSubRe/internal/config"
+	"FontLoaderSubRe/internal/db"
+	"FontLoaderSubRe/internal/i18n"
+	"FontLoaderSubRe/internal/session"
 )
 
 // App holds all GUI state.

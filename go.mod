@@ -1,4 +1,4 @@
-module fontloader-go
+module FontLoaderSubRe
 
 go 1.25.0
 
