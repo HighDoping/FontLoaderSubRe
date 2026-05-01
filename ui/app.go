@@ -120,6 +120,8 @@ func (a *App) buildUI() {
 	a.lblFooter = widget.NewHyperlink(s.Footer, footerURL)
 
 	a.txtDetails = widget.NewMultiLineEntry()
+	a.txtDetails.SetMinRowsVisible(10)
+	a.txtDetails.Wrapping = fyne.TextTruncate
 	a.txtDetails.Hide()
 
 	a.content = container.NewVBox(
@@ -285,10 +287,10 @@ func (a *App) handleDrop(uris []fyne.URI) {
 func (a *App) toggleDetails() {
 	if a.detailsVisible {
 		a.txtDetails.Hide()
-		a.win.Resize(fyne.NewSize(480, 160))
+		a.win.Resize(fyne.NewSize(480, 200))
 	} else {
 		a.txtDetails.Show()
-		a.win.Resize(fyne.NewSize(480, 380))
+		a.win.Resize(fyne.NewSize(480, 400))
 	}
 	a.detailsVisible = !a.detailsVisible
 	a.content.Refresh()

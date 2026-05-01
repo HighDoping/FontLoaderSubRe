@@ -41,7 +41,7 @@ func main() {
 
 	mgr := session.New()
 
-	a := app.NewWithID("com.highdoping.fontloadersubr")
+	a := app.NewWithID("com.highdoping.fontloadersubre")
 	a.SetIcon(fyne.NewStaticResource("icon.png", iconBytes))
 
 	uiApp := ui.New(a, cfg, database, mgr)
