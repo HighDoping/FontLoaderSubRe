@@ -13,7 +13,7 @@ const (
 	AppAuthor = "HighDoping"
 	AppName   = "FontLoaderSubRe"
 	DBName    = "FontLoaderSubRe.db"
-	Version   = "0.3.0"
+	Version   = "0.3.1"
 )
 
 // Config holds all persisted application settings.
