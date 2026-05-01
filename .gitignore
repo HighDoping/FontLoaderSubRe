@@ -13,3 +13,7 @@ dev/
 main.dist/
 main.app
 FontLoaderSubRe.app
+*.exe
+*.zip
+cli_indexer
+FontLoaderSubRe
