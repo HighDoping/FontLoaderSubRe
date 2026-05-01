@@ -10,9 +10,10 @@ import (
 )
 
 const (
-	AppName = "FontLoaderSubRe"
-	DBName  = "FontLoaderSubRe.db"
-	Version = "0.3.0"
+	AppAuthor = "HighDoping"
+	AppName   = "FontLoaderSubRe"
+	DBName    = "FontLoaderSubRe.db"
+	Version   = "0.3.0"
 )
 
 // Config holds all persisted application settings.
@@ -84,14 +85,11 @@ func (c *Config) DBPath() string {
 func configDir() (string, error) {
 	switch runtime.GOOS {
 	case "windows":
-		if d := os.Getenv("APPDATA"); d != "" {
-			return filepath.Join(d, AppName), nil
-		}
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return "", err
 		}
-		return filepath.Join(home, "AppData", "Roaming", AppName), nil
+		return filepath.Join(home, "AppData", "Local", AppAuthor, AppName), nil
 	case "darwin":
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -99,9 +97,6 @@ func configDir() (string, error) {
 		}
 		return filepath.Join(home, "Library", "Application Support", AppName), nil
 	default: // Linux / BSD
-		if d := os.Getenv("XDG_CONFIG_HOME"); d != "" {
-			return filepath.Join(d, AppName), nil
-		}
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return "", err
